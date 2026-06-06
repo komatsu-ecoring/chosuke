@@ -1,0 +1,20 @@
+# ⚠️ 鍵・シークレットは絶対にコミットしない
+.streamlit/secrets.toml
+*.json
+chosuke-*.json
+secrets.toml
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# ローカルデータ(移行元CSV。リポジトリには含めない)
+*.csv
+Chosuke_Data/
+screenshots/
+
+# OS
+.DS_Store
+Thumbs.db
