@@ -92,8 +92,10 @@ SHEET_SCHEMAS = {
         "eval_input",             # ①商品入力: 適切/要改善
         "eval_market_image",      # ②相場参考画像: 適切/要改善
         "eval_rank",              # ③Rank: 適切/要改善
-        "expert_answer_price",    # ④正解の買取金額(裕平さん)
-        "price_gap",              # staff_offer_price と expert_answer_price の差(自動計算)
+        "expert_answer_min",      # ④正解の買取金額・下限(裕平さん)
+        "expert_answer_max",      # ④正解の買取金額・上限(裕平さん)
+        "expert_answer_price",    # (旧)単一値。後方互換のため残置
+        "price_gap",              # staff_offer がレンジ外なら外れ幅、レンジ内なら0(自動計算)
         "overall_mark",           # 総合評価マーク: hanamaru / yoku / ganbaro
         "eval_comment",           # フィードバックコメント(自由記述)
         "reviewed_at",

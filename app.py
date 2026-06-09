@@ -2859,6 +2859,23 @@ def training_mode():
     st.markdown("## 🎓 " + t("ui.mode.training"))
     st.caption(t("ui.training.caption"))
 
+    # number_input の +/- ステッパーを隠す(現場フィードバック: 不要)
+    st.markdown("""
+        <style>
+        [data-testid="stNumberInput"] button {display:none;}
+        </style>
+    """, unsafe_allow_html=True)
+
+    # トレーニングは2タブ構成: 提出 / 自分の結果
+    tab_submit, tab_results = st.tabs([t("ui.training.tab.submit"), t("ui.training.tab.results")])
+    with tab_results:
+        _training_my_results()
+    with tab_submit:
+        _training_submit_panel()
+
+
+def _training_submit_panel():
+
     if "t_advice_result" not in st.session_state:
         st.session_state.t_advice_result = None
     if "t_advice_meta" not in st.session_state:
@@ -3159,68 +3176,30 @@ def training_mode():
             st.warning("査定ポイント画像は最大5枚です。先頭5枚のみ使用します。")
             point_files = point_files[:5]
 
-        # ===== トレーニング追加入力: 自分の買取金額 =====
-        st.markdown("### 💰 " + t("ui.training.offer.header"))
-        st.caption(t("ui.training.offer.caption"))
-        staff_offer = st.number_input(
-            t("ui.training.offer.label"), min_value=0, step=1, format="%d", key=_tk("offer"))
-
+        # 「Chosukeに相談する」: 商品情報が揃えば押せる(画像・金額は提出時に必須)
         staff_filled = bool(staff.strip())
         brand_filled = bool(brand_ja and brand_ja.strip())
-        overall_ok = overall_file is not None
-        offer_ok = staff_offer > 0
-        ready = staff_filled and brand_filled and overall_ok and offer_ok
+        consult_ready = staff_filled and brand_filled
         if not staff_filled:
             btn_help = t("ui.training.need_examinee")
         elif not brand_filled:
             btn_help = "ブランドを選択してください(必須)"
-        elif not overall_ok:
-            btn_help = t("ui.training.need_overall")
-        elif not offer_ok:
-            btn_help = t("ui.training.need_offer")
         else:
             btn_help = None
         ask_chosuke = st.button(
-            t("ui.training.submit"),
+            t("ui.training.consult"),
             type="primary",
             use_container_width=True,
-            disabled=not ready,
-            help=btn_help
+            disabled=not consult_ready,
+            help=btn_help,
+            key="train_consult_btn",
         )
 
-    # ----- 提出処理(Chosukeの応答 + training_history保存) -----
-    # 二重登録防止: 直前の提出timestampを覚えておき、同一フローでの再appendを防ぐ。
+    # ----- 「Chosukeに相談する」押下: 応答を生成し、入力スナップショットを保持(保存はしない) -----
     if ask_chosuke and brand_ja and product_name and staff.strip():
-        _ts_iso = datetime.now().isoformat(timespec="seconds")
-
-        # 相場参考スクショ(②の評価対象): 専用 shot_id "ts::market" で保存
-        market_shot_id = _ts_iso + "::market"
-        market_count = 0
-        if uploaded_files:
-            market_count = len(uploaded_files)
-            for i, f in enumerate(uploaded_files):
-                try:
-                    be.save_screenshot(market_shot_id, i, f.read())
-                except Exception as e:
-                    st.warning(f"相場スクショの保存に失敗しました({f.name}): {e}")
-
-        # 商品画像(①③の評価材料): shot_id "ts::item"。idx0=全体, idx1..=査定ポイント
-        item_shot_id = _ts_iso + "::item"
-        item_count = 0
-        try:
-            if overall_file is not None:
-                be.save_screenshot(item_shot_id, 0, overall_file.read())
-                item_count += 1
-            for j, pf in enumerate(point_files or [], start=1):
-                be.save_screenshot(item_shot_id, j, pf.read())
-                item_count += 1
-        except Exception as e:
-            st.warning(f"商品画像の保存に失敗しました: {e}")
-
-        # Chosukeの応答(査定モードと同じ。育成のためその場で観察を促す)
         advice = chosuke_advise(
             brand_ja, brand_en, product_name, year, accessories,
-            market_count, rank,
+            (len(uploaded_files) if uploaded_files else 0), rank,
             price_min, price_max, stamp_or_serial,
             is_microchip, is_year_unknown,
             is_random_serial=is_random_serial,
@@ -3229,45 +3208,22 @@ def training_mode():
             accessories_status=accessories_status,
             missing_items=missing_items,
         )
-
-        # 二重登録ガード: 同一 timestamp の提出が既にこのセッションで保存済みならスキップ
-        if st.session_state.get("_last_training_submit") != _ts_iso:
-            append_training({
-                "timestamp": _ts_iso,
-                "staff": staff,
-                "brand_ja": brand_ja,
-                "brand_en": brand_en,
-                "category": selected_category if selected_category != "指定なし" else "",
-                "product_name": product_name,
-                "year": year,
-                "accessories": accessories,
-                "rank": rank,
-                "price_min_usd": price_min if price_min > 0 else "",
-                "price_max_usd": price_max if price_max > 0 else "",
-                "image_count": item_count,
-                "staff_offer_price": staff_offer,
-                # 相場スクショと商品画像の2系統を別IDで保持(カンマ無し・サフィックスで区別)
-                "screenshot_ids": f"{market_shot_id}|{item_shot_id}",
-                "review_status": "pending",
-                "submitted_at": _ts_iso,
-                "eval_input": "",
-                "eval_market_image": "",
-                "eval_rank": "",
-                "expert_answer_price": "",
-                "price_gap": "",
-                "overall_mark": "",
-                "eval_comment": "",
-                "reviewed_at": "",
-            })
-            st.session_state["_last_training_submit"] = _ts_iso
-            st.toast("✅ 提出しました!Chosukeの応答を確認しましょう。")
-            st.session_state["_train_nonce"] = st.session_state.get("_train_nonce", 0) + 1
-
         st.session_state.t_advice_result = advice
         st.session_state.t_advice_meta = {
             "brand_ja": brand_ja, "brand_en": brand_en,
             "product_name": product_name, "staff": staff,
         }
+        # 提出時に使う入力スナップショット(相談時点の値を保持)
+        st.session_state["t_pending"] = {
+            "staff": staff, "brand_ja": brand_ja, "brand_en": brand_en,
+            "category": selected_category if selected_category != "指定なし" else "",
+            "product_name": product_name, "year": year, "accessories": accessories,
+            "rank": rank,
+            "price_min": price_min, "price_max": price_max,
+        }
+        # 新しい相談をしたら、前回の提出完了フラグはリセット
+        st.session_state.pop("t_submitted_done", None)
+
 
     # ----- 右: Chosukeの応答 -----
     with col_output:
@@ -3413,43 +3369,164 @@ def training_mode():
                         st.checkbox(f"**{row['check_item']}**", key=chk_key)
                         st.caption(row["hint"])
 
-            # フィードバック欄
+            # ===== 応答を見た後: 商品画像 + 自分の買取金額 + 提出 =====
             st.markdown("---")
-            st.markdown("#### " + t("ui.card.feedback"))
-            st.caption(
-                "足りなかった確認事項、ズレてた相場感などがあれば教えてください。"
-                "送信したフィードバックは、ナレッジ管理モードで内容を確認のうえ「正式化」することで、"
-                "次回以降のChosukeの応答に反映されます。"
-            )
+            st.markdown("### 🖼️ " + t("ui.training.img.header"))
+            st.markdown("**" + t("ui.training.img.overall") + "**")
+            st.caption(t("ui.training.img.overall_caption"))
+            overall_file = st.file_uploader(
+                t("ui.training.img.overall"), type=["png", "jpg", "jpeg"],
+                accept_multiple_files=False, key=_tk("img_overall"))
+            st.markdown("**" + t("ui.training.img.points") + "**")
+            st.caption(t("ui.training.img.points_caption"))
+            point_files = st.file_uploader(
+                t("ui.training.img.points"), type=["png", "jpg", "jpeg"],
+                accept_multiple_files=True, key=_tk("img_points"))
+            if point_files and len(point_files) > 5:
+                st.warning("査定ポイント画像は最大5枚です。先頭5枚のみ使用します。")
+                point_files = point_files[:5]
 
-            with st.form("training_feedback_form"):
-                fb_type = st.selectbox(
-                    "フィードバック種別",
-                    ["不足してた確認事項", "相場感のズレ", "ノウハウ追加", "その他"]
-                )
-                fb_content = st.text_area("内容", placeholder="例: このブランドのこの年代は素材が変わったから注意した方がいい")
-                fb_submit = st.form_submit_button("📤 Chosukeに教える")
+            st.markdown("### 💰 " + t("ui.training.offer.header"))
+            st.caption(t("ui.training.offer.after_consult"))
+            staff_offer = st.number_input(
+                t("ui.training.offer.label"), min_value=0, step=1, format="%d", key=_tk("offer"))
 
-                if fb_submit and fb_content:
-                    append_feedback({
-                        "timestamp": datetime.now().isoformat(timespec="seconds"),
-                        "staff": meta.get("staff", ""),
-                        "brand_ja": meta.get("brand_ja", ""),
-                        "product_name": meta.get("product_name", ""),
-                        "feedback_type": fb_type,
-                        "content": fb_content,
-                        "promoted": False,
+            overall_ok = overall_file is not None
+            offer_ok = staff_offer > 0
+            submit_ready = overall_ok and offer_ok
+            if not overall_ok:
+                sub_help = t("ui.training.need_overall")
+            elif not offer_ok:
+                sub_help = t("ui.training.need_offer")
+            else:
+                sub_help = None
+
+            already = st.session_state.get("t_submitted_done")
+            if already:
+                st.success("🦉 " + t("ui.training.submitted"))
+            else:
+                do_submit = st.button(
+                    t("ui.training.tab.submit"), type="primary", use_container_width=True,
+                    disabled=not submit_ready, help=sub_help, key="train_submit_btn")
+                if do_submit and submit_ready:
+                    snap = st.session_state.get("t_pending", {})
+                    _ts_iso = datetime.now().isoformat(timespec="seconds")
+                    # 相場参考スクショ(②): shot_id "ts::market"
+                    market_shot_id = _ts_iso + "::market"
+                    market_count = 0
+                    if uploaded_files:
+                        market_count = len(uploaded_files)
+                        for i, f in enumerate(uploaded_files):
+                            try:
+                                be.save_screenshot(market_shot_id, i, f.read())
+                            except Exception as ex:
+                                st.warning(f"相場スクショ保存に失敗({f.name}): {ex}")
+                    # 商品画像(①③): shot_id "ts::item" idx0=全体, idx1..=ポイント
+                    item_shot_id = _ts_iso + "::item"
+                    item_count = 0
+                    try:
+                        be.save_screenshot(item_shot_id, 0, overall_file.read())
+                        item_count += 1
+                        for j, pf in enumerate(point_files or [], start=1):
+                            be.save_screenshot(item_shot_id, j, pf.read())
+                            item_count += 1
+                    except Exception as ex:
+                        st.warning(f"商品画像の保存に失敗: {ex}")
+
+                    append_training({
+                        "timestamp": _ts_iso,
+                        "staff": snap.get("staff", ""),
+                        "brand_ja": snap.get("brand_ja", ""),
+                        "brand_en": snap.get("brand_en", ""),
+                        "category": snap.get("category", ""),
+                        "product_name": snap.get("product_name", ""),
+                        "year": snap.get("year", ""),
+                        "accessories": snap.get("accessories", ""),
+                        "rank": snap.get("rank", ""),
+                        "price_min_usd": snap.get("price_min") if snap.get("price_min", 0) else "",
+                        "price_max_usd": snap.get("price_max") if snap.get("price_max", 0) else "",
+                        "image_count": item_count,
+                        "staff_offer_price": staff_offer,
+                        "screenshot_ids": f"{market_shot_id}|{item_shot_id}",
+                        "review_status": "pending",
+                        "submitted_at": _ts_iso,
+                        "eval_input": "", "eval_market_image": "", "eval_rank": "",
+                        "expert_answer_min": "", "expert_answer_max": "",
+                        "expert_answer_price": "", "price_gap": "",
+                        "overall_mark": "", "eval_comment": "", "reviewed_at": "",
                     })
-                    st.success(
-                        "Chosukeに伝えました。"
-                        "**ナレッジ管理モード → フィードバックタブ** で「正式化」にチェックを入れて保存すると、"
-                        "次回以降の応答に反映されます。"
-                    )
+                    st.session_state["t_submitted_done"] = True
+                    st.toast("✅ 提出しました!裕平さんの評価を待ちましょう。")
+                    st.rerun()
 
 
 # ============================================================
 # 画面2: ナレッジ管理モード
 # ============================================================
+
+
+def _training_my_results():
+    """staff が自分のトレーニング評価結果を確認する画面(緩い運用: 名前を選ぶだけ)。"""
+    st.caption(t("ui.training.myresults.caption"))
+    df = load_training()
+    if df.empty:
+        st.info(t("ui.training.myresults.none"))
+        return
+    if "review_status" not in df.columns:
+        df["review_status"] = "pending"
+    df["review_status"] = df["review_status"].fillna("pending")
+
+    staff_options = load_staff_master()
+    who = st.selectbox(t("ui.training.examinee"), staff_options, index=None,
+                       placeholder=t("ui.staff.placeholder"), key="myresults_who")
+    if not who:
+        return
+
+    mine = df[(df["staff"].astype(str).str.strip() == who) &
+              (df["review_status"] == "reviewed")].copy()
+    if mine.empty:
+        st.info(t("ui.training.myresults.none"))
+        return
+
+    mine = mine.sort_values("timestamp", ascending=False)
+    _MARK_DISP = {
+        "hanamaru": t("ui.training_review.mark.hanamaru"),
+        "yoku": t("ui.training_review.mark.yoku"),
+        "ganbaro": t("ui.training_review.mark.ganbaro"),
+    }
+    for _, row in mine.iterrows():
+        ts = str(row.get("timestamp", ""))[:16].replace("T", " ")
+        brand = row.get("brand_ja", "")
+        product = row.get("product_name", "")
+        mark = _MARK_DISP.get(str(row.get("overall_mark", "")), "")
+        with st.container(border=True):
+            st.markdown(f"#### {mark}")
+            st.caption(f"{ts} / {brand} / {product}")
+            # 自分の提出 vs 正解レンジ
+            emin = row.get("expert_answer_min", "")
+            emax = row.get("expert_answer_max", "")
+            offer = row.get("staff_offer_price", "")
+            if emin and emax:
+                ans = f"${emin} 〜 ${emax}"
+            elif row.get("expert_answer_price", ""):
+                ans = f"${row.get('expert_answer_price')}"
+            else:
+                ans = "—"
+            cols = st.columns(2)
+            cols[0].metric("あなたの買取金額", f"${offer}")
+            cols[1].metric("正解の買取金額", ans)
+            # 4軸
+            _ev = {"適切": "🟢", "要改善": "🟡", "Good": "🟢", "Needs work": "🟡"}
+            def _e(v): return f"{_ev.get(str(v), '')} {v}" if v else "—"
+            st.markdown(
+                f"- {t('ui.training_review.axis1')}: {_e(row.get('eval_input',''))}\n"
+                f"- {t('ui.training_review.axis2')}: {_e(row.get('eval_market_image',''))}\n"
+                f"- {t('ui.training_review.axis3')}: {_e(row.get('eval_rank',''))}"
+            )
+            comment = str(row.get("eval_comment", "") or "")
+            if comment:
+                st.markdown("**🦉 " + t("ui.training_review.comment") + "**")
+                st.info(comment)
 
 
 def _tk(base: str) -> str:
@@ -3613,9 +3690,17 @@ def training_review_mode():
         except (ValueError, TypeError):
             _staff_offer_val = 0.0
         st.caption(f"staff の買取金額: ${_staff_offer_val:.0f}")
-        expert_price = st.number_input(
-            t("ui.training_review.expert_price"), min_value=0, step=1, format="%d",
-            help="あなたが考える正解の買取金額。staff との差(ズレ)が自動計算されます。")
+        _ep1, _ep2 = st.columns(2)
+        with _ep1:
+            expert_min = st.number_input(
+                t("ui.training_review.expert_price_min"), min_value=0, step=1, format="%d",
+                key=f"tr_emin_{target_idx}",
+                help="あなたが考える正解の買取金額の下限。")
+        with _ep2:
+            expert_max = st.number_input(
+                t("ui.training_review.expert_price_max"), min_value=0, step=1, format="%d",
+                key=f"tr_emax_{target_idx}",
+                help="あなたが考える正解の買取金額の上限。staff の額がこのレンジ内かで判断。")
 
         st.markdown("**" + t("ui.training_review.mark") + "**")
         _MARKS = {
@@ -3637,13 +3722,21 @@ def training_review_mode():
             skip_btn = st.form_submit_button("⏭ スキップ", use_container_width=True)
 
         if save_btn:
+            # ズレ計算: staff額がレンジ[min,max]内なら0、外れていれば最寄り境界からの差
             gap = ""
-            if expert_price > 0 and _staff_offer_val > 0:
-                gap = int(_staff_offer_val - expert_price)
+            if expert_min > 0 and expert_max > 0 and _staff_offer_val > 0:
+                lo, hi = min(expert_min, expert_max), max(expert_min, expert_max)
+                if _staff_offer_val < lo:
+                    gap = int(_staff_offer_val - lo)   # 負: 安く見積もりすぎ
+                elif _staff_offer_val > hi:
+                    gap = int(_staff_offer_val - hi)   # 正: 高く見積もりすぎ
+                else:
+                    gap = 0                             # レンジ内
             df.at[target_idx, "eval_input"] = eval_input
             df.at[target_idx, "eval_market_image"] = eval_market
             df.at[target_idx, "eval_rank"] = eval_rank
-            df.at[target_idx, "expert_answer_price"] = expert_price if expert_price > 0 else ""
+            df.at[target_idx, "expert_answer_min"] = expert_min if expert_min > 0 else ""
+            df.at[target_idx, "expert_answer_max"] = expert_max if expert_max > 0 else ""
             df.at[target_idx, "price_gap"] = gap
             df.at[target_idx, "overall_mark"] = _MARKS[mark_label]
             df.at[target_idx, "eval_comment"] = eval_comment
