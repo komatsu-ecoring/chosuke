@@ -73,6 +73,31 @@ SHEET_SCHEMAS = {
     "staff_master": [
         "staff_name",
     ],
+    # v0.14: トレーニングモード(本格版)。
+    #   staff が実際の商品画像(全体1枚+査定ポイント最大5枚)をアップし、
+    #   自分の買取金額を入力して提出する。裕平さんが現物を見ながら4軸で評価する。
+    #   画像は screenshots タブに shot_id(=この timestamp)で保存(査定モードと同じ方式)。
+    "training_history": [
+        "timestamp", "staff",
+        # --- staff が入力する査定情報(査定モードと同じ項目) ---
+        "brand_ja", "brand_en", "category", "product_name", "year",
+        "accessories", "rank", "price_min_usd", "price_max_usd",
+        "image_count",            # アップした画像枚数(全体1+査定ポイント最大5)
+        "staff_offer_price",      # staff が出した自分の買取金額(本格版の肝)
+        "screenshot_ids",         # 画像の shot_id(=timestamp)。screenshots タブ参照キー
+        # --- 提出ステータス ---
+        "review_status",          # pending / reviewed / skipped
+        "submitted_at",
+        # --- 裕平さんが入力する評価(現物を見ながら4軸) ---
+        "eval_input",             # ①商品入力: 適切/要改善
+        "eval_market_image",      # ②相場参考画像: 適切/要改善
+        "eval_rank",              # ③Rank: 適切/要改善
+        "expert_answer_price",    # ④正解の買取金額(裕平さん)
+        "price_gap",              # staff_offer_price と expert_answer_price の差(自動計算)
+        "overall_mark",           # 総合評価マーク: hanamaru / yoku / ganbaro
+        "eval_comment",           # フィードバックコメント(自由記述)
+        "reviewed_at",
+    ],
 }
 
 
