@@ -2850,78 +2850,275 @@ def review_mode():
 
 
 
-def _training_nonce() -> int:
-    """トレーニング入力のクリア用 nonce(査定モードの _appr_nonce と同思想)。"""
-    return st.session_state.get("_train_nonce", 0)
-
-def _tk(base: str) -> str:
-    """トレーニング入力ウィジェットのキー(nonce 付き)。"""
-    return f"train_{base}_{_training_nonce()}"
 
 
+# ============================================================
+# 画面: トレーニングモード(本格版) — 査定モードを土台に画像取込+買取金額
+# ============================================================
 def training_mode():
-    """🎓 トレーニングモード(本格版・staff提出側)。
-    実際の商品画像(全体1枚+査定ポイント最大5枚)をアップし、査定情報と
-    自分の買取金額を入力して提出する。提出物は training_history に保存され、
-    裕平さんが現物を見ながら4軸で評価する。
-    既存の査定モードの入力UI・画像保存(be.save_screenshot)を流用する。"""
     st.markdown("## 🎓 " + t("ui.mode.training"))
     st.caption(t("ui.training.caption"))
 
-    if st.session_state.get("_training_just_submitted"):
-        st.success("🦉 " + t("ui.training.submitted"))
-        st.session_state["_training_just_submitted"] = False
+    if "t_advice_result" not in st.session_state:
+        st.session_state.t_advice_result = None
+    if "t_advice_meta" not in st.session_state:
+        st.session_state.t_advice_meta = {}
 
-    col_input, col_side = st.columns([1, 1.1], gap="large")
+    col_input, col_output = st.columns([1, 1.3], gap="large")
 
+    # ----- 左: 商品情報入力 -----
     with col_input:
-        # ===== 受験者(staff選択。査定モードと同じ select-only 方式) =====
-        st.markdown("### " + t("ui.training.examinee"))
+        # ===== 担当staff(最上部・必須項目) =====
+        # v0.12.4: フリーテキスト入力(text_input)による表記ゆれ(Komatsu/komastu/komatu…)を
+        #   防ぐため、staff_master.csv からの選択式(selectbox)に変更。
+        #   「(➕ 新規staffを追加)」を選んだときだけ入力欄を出し、確定した名前はマスタへ自動登録する。
+        #   ※固定キー apprai_staff の意味は「最終的に確定したstaff名」を保持する点で従来どおり。
+        #     クリア時に残す挙動(_clear_appraisal_inputs が触らない)も維持される。
+        st.markdown("### " + t("ui.staff.header"))
+
+        _STAFF_NEW_OPTION = "(➕ 新規staffを追加)"
         staff_options = load_staff_master()
-        _cur = str(st.session_state.get("train_examinee", "") or "").strip()
-        _idx = staff_options.index(_cur) if _cur in staff_options else None
-        examinee = st.selectbox(
-            t("ui.training.examinee"),
-            staff_options,
-            index=_idx,
+        # クラウド版: 表記ゆれ再発防止のため、新規staff追加は管理者のみ。
+        # staff ロールでは選択肢に「新規追加」を出さない(選ぶだけ)。
+        _is_admin = st.session_state.get("role") == "admin"
+        if _is_admin:
+            staff_select_options = staff_options + [_STAFF_NEW_OPTION]
+        else:
+            staff_select_options = staff_options
+
+        # 既に確定済みのstaff(apprai_staff)があれば、それを初期選択にする。
+        _current_staff = str(st.session_state.get("train_examinee", "") or "").strip()
+        if _current_staff and _current_staff in staff_options:
+            _staff_index = staff_options.index(_current_staff)
+        else:
+            _staff_index = None
+
+        _staff_choice = st.selectbox(
+            t("ui.staff.header"),
+            staff_select_options,
+            index=_staff_index,
             placeholder=t("ui.staff.placeholder"),
             key="train_examinee_select",
             label_visibility="collapsed",
+            help="必須項目です。誰が査定したかを記録します。"
         )
-        examinee = examinee or ""
-        st.session_state["train_examinee"] = examinee
-        if not examinee.strip():
-            st.caption("⚠️ " + t("ui.training.need_examinee"))
 
-        # ===== 商品情報(査定モードと同じ項目を流用) =====
+        if _is_admin and _staff_choice == _STAFF_NEW_OPTION:
+            _staff_new = st.text_input(
+                "新しいstaff名",
+                key="train_examinee_new",
+                placeholder="例: Pichi",
+                help="入力した名前は次回から選択肢に追加されます(管理者のみ)。"
+            ).strip()
+            staff = _staff_new
+            if _staff_new:
+                # 新規入力された名前をマスタに登録(次回以降は選択肢に出る)
+                add_staff_to_master(_staff_new)
+        elif _staff_choice:
+            staff = _staff_choice
+        else:
+            staff = ""
+
+        # 確定したstaff名を固定キーに反映(履歴保存・クリア後の保持はこのキーを使う)
+        st.session_state["train_examinee"] = staff
+
+        if not staff.strip():
+            st.caption("⚠️ " + t("ui.staff.required"))
+
         st.markdown("### " + t("ui.product.header"))
-        brands_df = load_brands().sort_values("brand_ja").reset_index(drop=True)
+
+        brands_df = load_brands()
+        brands_df_sorted = brands_df.sort_values("brand_ja").reset_index(drop=True)
+
+        # まずカテゴリを「内部状態」として保持(UIは後で出す)
+        # ※ブランド絞り込みに使うため、現在の選択値を先読みする。
+        #   v0.10.9: nonce方式に伴い、カテゴリの現在値も nonce 付きキーから読む。
+        #   クリア直後は nonce が変わって該当キーが無い → 「指定なし」になる。
+        selected_category = st.session_state.get(_tk("category"), "指定なし")
+
+        # カテゴリでブランドを絞り込み(現在の選択値を使う)
+        # v0.10.6: 絞り込み結果が0件になったら自動で全ブランド表示に戻す(フォールバック)。
+        #   ハイブランドは1ブランドで多カテゴリ(バッグ/財布/スカーフ/時計…)を扱うのが実態。
+        #   マスタの category は1ブランド1値しか持てないため、スカーフ・アクセサリー等を選ぶと
+        #   ヴィトン等の主要ブランドが候補から消える取りこぼしが起きていた(査定不能になる)。
+        #   → ブランドを消さないことを最優先にし、該当0件なら絞り込みを無効化する。
+        if selected_category != "指定なし":
+            def _matches_category(master_cat: str) -> bool:
+                normalized = BRAND_CATEGORY_NORMALIZE.get(master_cat, master_cat)
+                return normalized == selected_category
+
+            candidate_df = brands_df_sorted[
+                brands_df_sorted["category"].apply(_matches_category)
+            ].reset_index(drop=True)
+
+            if len(candidate_df) > 0:
+                filtered_df = candidate_df
+            else:
+                # 該当ブランドが1件も無い → 絞り込みを諦めて全ブランド表示に戻す
+                filtered_df = brands_df_sorted
+        else:
+            filtered_df = brands_df_sorted
+
         brand_labels = [
-            f"{row['brand_ja']}  /  {row['brand_en']}" for _, row in brands_df.iterrows()
+            f"{row['brand_ja']}  /  {row['brand_en']}"
+            for _, row in filtered_df.iterrows()
         ] + ["(その他/未登録)"]
-        brand_choice = st.selectbox(
-            t("ui.brand.label"), brand_labels, index=None,
-            placeholder=t("ui.brand.placeholder"), key=_tk("brand"),
+
+        # v0.10.7: フォールバック時の案内文は削除(現場フィードバック: 不要・くどい)。
+        #   ブランドが消えない挙動(フォールバック)はそのまま維持。
+        #   絞り込めない場合は黙って全ブランドを出すのが自然な体験。
+
+        # ブランド選択(カテゴリより上に表示)
+        sel_label = st.selectbox(
+            t("ui.brand.label"),
+            brand_labels,
+            index=None,
+            placeholder=t("ui.brand.placeholder"),
+            key=_tk("brand_label")
         )
-        brand_ja, brand_en = "", ""
-        if brand_choice and brand_choice != "(その他/未登録)":
-            parts = brand_choice.split("  /  ")
-            brand_ja = parts[0].strip()
-            brand_en = parts[1].strip() if len(parts) > 1 else ""
 
-        product_name = st.text_input(
-            t("ui.product.label"), placeholder=t("ui.product.placeholder"), key=_tk("product"))
+        # カテゴリ選択(ブランドの下・絞り込みフィルタ)
+        # ※key="apprai_category" は session_state で復元されるので index 指定不要
+        selected_category = st.selectbox(
+            t("ui.category.label"),
+            CATEGORY_OPTIONS,
+            key=_tk("category"),
+            help="カテゴリを選ぶと、上のブランドリストがそのカテゴリのブランドのみに絞り込まれます。「指定なし」で全ブランド表示。"
+        )
 
-        col_y, col_r = st.columns(2)
+        if sel_label is None:
+            brand_ja = ""
+            brand_en = ""
+        elif sel_label == "(その他/未登録)":
+            brand_ja = st.text_input("ブランド名(日本語)", key=_tk("brand_custom_ja"))
+            brand_en = st.text_input("ブランド名(英語)", key=_tk("brand_custom_en"))
+        else:
+            parts = sel_label.split("  /  ")
+            brand_ja = parts[0]
+            brand_en = parts[1] if len(parts) > 1 else ""
+
+        product_name = st.text_input(t("ui.product.label"), value="", placeholder=t("ui.product.placeholder"), key=_tk("product"))
+
+        col_y, col_r = st.columns([1, 1])
         with col_y:
             year = st.text_input(t("ui.year.label"), placeholder=t("ui.year.placeholder"), key=_tk("year"))
         with col_r:
             rank = st.selectbox(t("ui.rank.label"), RANK_OPTIONS, key=_tk("rank"))
 
-        _ACC_LABEL = {"フルセット": "ui.acc.full", "一部欠品": "ui.acc.partial", "本体のみ": "ui.acc.bodyonly"}
-        accessories = st.selectbox(
-            t("ui.acc.label"), ["フルセット", "一部欠品", "本体のみ"],
-            format_func=lambda v: t(_ACC_LABEL.get(v, v)), key=_tk("acc"))
+        # 付属品は単独行(直下に「一部欠品」の詳細チェックリストを出すため)
+        # ※ option の値("フルセット"等)は履歴保存・判定ロジックで使う固定キーなので翻訳しない。
+        #   表示だけ format_func で言語切替する。
+        _ACC_LABEL = {
+            "フルセット": "ui.acc.full",
+            "一部欠品": "ui.acc.partial",
+            "本体のみ": "ui.acc.bodyonly",
+        }
+        accessories_status = st.selectbox(
+            t("ui.acc.label"),
+            ["フルセット", "一部欠品", "本体のみ"],
+            format_func=lambda v: t(_ACC_LABEL.get(v, v)),
+            key=_tk("acc_status")
+        )
+
+        # 「一部欠品」のときだけ詳細チェックリストを表示
+        # (付属品プルダウンの直下に置くことで、選択→入力の視線が途切れないようにする)
+        accessories_detail = ""
+        missing_items = []  # 欠品品目(一部欠品以外では空のまま → Chosukeの欠品コメントも出ない)
+        if accessories_status == "一部欠品":
+            with st.container(border=True):
+                st.caption(t("ui.acc.missing_prompt"))
+
+                # 主要項目(常に表示)
+                main_items = ["箱", "保存袋", "ギャランティーカード",
+                              "取扱説明書(取説)", "鍵・カデナ", "ストラップ"]
+                main_cols = st.columns(2)
+                for i, item in enumerate(main_items):
+                    with main_cols[i % 2]:
+                        if st.checkbox(item, key=_tk(f"acc_main_{item}")):
+                            missing_items.append(item)
+
+                # 「もっと見る」展開
+                with st.expander("▼ もっと見る(細かい項目)"):
+                    extra_items = ["内箱", "外箱", "化粧箱", "レシート・購入証明",
+                                   "シリアルカード", "ショッピングバッグ(紙袋)",
+                                   "予備コマ", "タグ"]
+                    extra_cols = st.columns(2)
+                    for i, item in enumerate(extra_items):
+                        with extra_cols[i % 2]:
+                            if st.checkbox(item, key=_tk(f"acc_extra_{item}")):
+                                missing_items.append(item)
+
+                    other_text = st.text_input(
+                        "その他(自由記述)",
+                        placeholder="例: パドロックの鍵が片方なし",
+                        key=_tk("acc_other")
+                    )
+                    if other_text.strip():
+                        missing_items.append(f"その他: {other_text.strip()}")
+
+                accessories_detail = ", ".join(missing_items) if missing_items else "(欠品項目未指定)"
+
+        # ギャランティーカード有無 (v0.10: 推奨原価率の動的算出に使用)
+        # ※ option値は下の gc_status マップのキーなので翻訳しない。表示のみ format_func で切替。
+        _GC_LABEL = {
+            "対象外 / 不問": "ui.gc.na",
+            "有り": "ui.gc.has",
+            "無し": "ui.gc.none",
+        }
+        gc_choice = st.radio(
+            t("ui.gc.label"),
+            ["対象外 / 不問", "有り", "無し"],
+            format_func=lambda v: t(_GC_LABEL.get(v, v)),
+            horizontal=True,
+            key=_tk("gc"),
+            help="時計・ジュエリー・一部バッグで査定額に影響します。該当しない商品は「対象外 / 不問」。"
+        )
+        gc_status = {"有り": "has", "無し": "none", "対象外 / 不問": "na"}[gc_choice]
+
+        # 製造年の補助フラグ: マイクロチップ品 / 年式不明 / ランダムシリアル品
+        col_chip, col_unknown, col_random = st.columns(3)
+        with col_chip:
+            is_microchip = st.checkbox(
+                "マイクロチップ品(2021年以降)",
+                key=_tk("microchip"),
+                help="2021年以降のCHANEL等はシリアルがマイクロチップ化(ランダム番号)。"
+                     "外観からの年式判定不可。チェックすると年式判定ロジックをスキップします。"
+            )
+        with col_unknown:
+            is_year_unknown = st.checkbox(
+                "年式不明",
+                key=_tk("year_unknown"),
+                help="製造年が判定できない場合にチェック。"
+            )
+        with col_random:
+            is_random_serial = st.checkbox(
+                "ランダムシリアル品(ロレックス2010年以降)",
+                key=_tk("random_serial"),
+                help="ロレックスは2010年頃からシリアルがランダム化され、シリアルからの年式特定が不可。"
+                     "チェックすると年式判定ロジックをスキップします。"
+            )
+
+        # 履歴・応答ロジック用に付属品情報を文字列化
+        if accessories_status == "フルセット":
+            accessories = "フルセット"
+        elif accessories_status == "本体のみ":
+            accessories = "本体のみ"
+        else:  # 一部欠品
+            accessories = f"一部欠品 [{accessories_detail}]" if accessories_detail else "一部欠品"
+
+        # ブランド固有: 刻印・シリアル入力
+        stamp_or_serial = ""
+        if brand_en in ("HERMES", "CHANEL", "ROLEX"):
+            label_map = {
+                "HERMES": "刻印(例: A, ○A, □R, R など)",
+                "CHANEL": "シリアル番号(7桁または8桁)",
+                "ROLEX": "シリアル番号(数字または英数字)",
+            }
+            stamp_or_serial = st.text_input(
+                label_map[brand_en],
+                placeholder="入力するとChosukeが年式推定します",
+                key=_tk("stamp")
+            )
 
         st.markdown("### " + t("ui.market.header"))
         st.caption(t("ui.market.caption"))
@@ -2931,99 +3128,378 @@ def training_mode():
         with col_pmax:
             price_max = st.number_input(t("ui.market.max"), min_value=0, step=1, format="%d", key=_tk("pmax"))
 
-    with col_side:
-        # ===== 商品画像(全体1枚 必須 + 査定ポイント最大5枚) =====
-        st.markdown("### 🖼️ " + t("ui.training.img.header"))
+        st.markdown("### " + t("ui.screenshot.header"))
+        st.caption(t("ui.screenshot.caption"))
+        uploaded_files = st.file_uploader(
+            "スクショをドラッグ&ドロップ",
+            type=["png", "jpg", "jpeg"],
+            accept_multiple_files=True,
+            key=_tk("screenshots")
+        )
 
+        # ===== トレーニング追加入力: 商品画像(全体1枚 + 査定ポイント最大5枚) =====
+        st.markdown("### 🖼️ " + t("ui.training.img.header"))
         st.markdown("**" + t("ui.training.img.overall") + "**")
         st.caption(t("ui.training.img.overall_caption"))
         overall_file = st.file_uploader(
-            t("ui.training.img.overall"), type=["png", "jpg", "jpeg"],
-            accept_multiple_files=False, key=_tk("img_overall"),
-            label_visibility="collapsed")
-
+            t("ui.training.img.overall"),
+            type=["png", "jpg", "jpeg"],
+            accept_multiple_files=False,
+            key=_tk("img_overall"),
+        )
         st.markdown("**" + t("ui.training.img.points") + "**")
         st.caption(t("ui.training.img.points_caption"))
         point_files = st.file_uploader(
-            t("ui.training.img.points"), type=["png", "jpg", "jpeg"],
-            accept_multiple_files=True, key=_tk("img_points"),
-            label_visibility="collapsed")
-        # 査定ポイントは最大5枚に制限
+            t("ui.training.img.points"),
+            type=["png", "jpg", "jpeg"],
+            accept_multiple_files=True,
+            key=_tk("img_points"),
+        )
         if point_files and len(point_files) > 5:
             st.warning("査定ポイント画像は最大5枚です。先頭5枚のみ使用します。")
             point_files = point_files[:5]
 
-        # ===== 自分の買取金額 =====
+        # ===== トレーニング追加入力: 自分の買取金額 =====
         st.markdown("### 💰 " + t("ui.training.offer.header"))
         st.caption(t("ui.training.offer.caption"))
         staff_offer = st.number_input(
             t("ui.training.offer.label"), min_value=0, step=1, format="%d", key=_tk("offer"))
 
-        st.markdown("---")
-        # 提出ボタン: 受験者・全体画像・買取金額が揃って初めて有効
-        ready = bool(examinee.strip()) and (overall_file is not None) and (staff_offer > 0)
-        if not examinee.strip():
-            sub_help = t("ui.training.need_examinee")
-        elif overall_file is None:
-            sub_help = t("ui.training.need_overall")
-        elif staff_offer <= 0:
-            sub_help = t("ui.training.need_offer")
+        staff_filled = bool(staff.strip())
+        brand_filled = bool(brand_ja and brand_ja.strip())
+        overall_ok = overall_file is not None
+        offer_ok = staff_offer > 0
+        ready = staff_filled and brand_filled and overall_ok and offer_ok
+        if not staff_filled:
+            btn_help = t("ui.training.need_examinee")
+        elif not brand_filled:
+            btn_help = "ブランドを選択してください(必須)"
+        elif not overall_ok:
+            btn_help = t("ui.training.need_overall")
+        elif not offer_ok:
+            btn_help = t("ui.training.need_offer")
         else:
-            sub_help = None
-        submit = st.button(
-            t("ui.training.submit"), type="primary", use_container_width=True,
-            disabled=not ready, help=sub_help)
+            btn_help = None
+        ask_chosuke = st.button(
+            t("ui.training.submit"),
+            type="primary",
+            use_container_width=True,
+            disabled=not ready,
+            help=btn_help
+        )
 
-    # ----- 提出処理 -----
-    if submit and ready:
+    # ----- 提出処理(Chosukeの応答 + training_history保存) -----
+    # 二重登録防止: 直前の提出timestampを覚えておき、同一フローでの再appendを防ぐ。
+    if ask_chosuke and brand_ja and product_name and staff.strip():
         _ts_iso = datetime.now().isoformat(timespec="seconds")
-        # 画像保存: idx=0 を全体画像、idx>=1 を査定ポイントとする(レビュー側で区別)
-        img_count = 0
-        try:
-            be.save_screenshot(_ts_iso, 0, overall_file.read())
-            img_count += 1
-            for i, f in enumerate(point_files or [], start=1):
-                be.save_screenshot(_ts_iso, i, f.read())
-                img_count += 1
-        except Exception as e:
-            st.warning(f"画像の保存に失敗しました: {e}")
 
-        append_training({
-            "timestamp": _ts_iso,
-            "staff": examinee,
-            "brand_ja": brand_ja,
-            "brand_en": brand_en,
-            "category": "",
-            "product_name": product_name,
-            "year": year,
-            "accessories": accessories,
-            "rank": rank,
-            "price_min_usd": price_min if price_min > 0 else "",
-            "price_max_usd": price_max if price_max > 0 else "",
-            "image_count": img_count,
-            "staff_offer_price": staff_offer,
-            "screenshot_ids": _ts_iso if img_count > 0 else "",
-            "review_status": "pending",
-            "submitted_at": _ts_iso,
-            "eval_input": "",
-            "eval_market_image": "",
-            "eval_rank": "",
-            "expert_answer_price": "",
-            "price_gap": "",
-            "overall_mark": "",
-            "eval_comment": "",
-            "reviewed_at": "",
-        })
-        # 入力クリア(nonce を進める)+ 完了フラグ
-        st.session_state["_train_nonce"] = _training_nonce() + 1
-        st.session_state["_training_just_submitted"] = True
-        st.rerun()
+        # 相場参考スクショ(②の評価対象): 専用 shot_id "ts::market" で保存
+        market_shot_id = _ts_iso + "::market"
+        market_count = 0
+        if uploaded_files:
+            market_count = len(uploaded_files)
+            for i, f in enumerate(uploaded_files):
+                try:
+                    be.save_screenshot(market_shot_id, i, f.read())
+                except Exception as e:
+                    st.warning(f"相場スクショの保存に失敗しました({f.name}): {e}")
+
+        # 商品画像(①③の評価材料): shot_id "ts::item"。idx0=全体, idx1..=査定ポイント
+        item_shot_id = _ts_iso + "::item"
+        item_count = 0
+        try:
+            if overall_file is not None:
+                be.save_screenshot(item_shot_id, 0, overall_file.read())
+                item_count += 1
+            for j, pf in enumerate(point_files or [], start=1):
+                be.save_screenshot(item_shot_id, j, pf.read())
+                item_count += 1
+        except Exception as e:
+            st.warning(f"商品画像の保存に失敗しました: {e}")
+
+        # Chosukeの応答(査定モードと同じ。育成のためその場で観察を促す)
+        advice = chosuke_advise(
+            brand_ja, brand_en, product_name, year, accessories,
+            market_count, rank,
+            price_min, price_max, stamp_or_serial,
+            is_microchip, is_year_unknown,
+            is_random_serial=is_random_serial,
+            gc_status=gc_status,
+            assess_cat=(selected_category if selected_category != "指定なし" else ""),
+            accessories_status=accessories_status,
+            missing_items=missing_items,
+        )
+
+        # 二重登録ガード: 同一 timestamp の提出が既にこのセッションで保存済みならスキップ
+        if st.session_state.get("_last_training_submit") != _ts_iso:
+            append_training({
+                "timestamp": _ts_iso,
+                "staff": staff,
+                "brand_ja": brand_ja,
+                "brand_en": brand_en,
+                "category": selected_category if selected_category != "指定なし" else "",
+                "product_name": product_name,
+                "year": year,
+                "accessories": accessories,
+                "rank": rank,
+                "price_min_usd": price_min if price_min > 0 else "",
+                "price_max_usd": price_max if price_max > 0 else "",
+                "image_count": item_count,
+                "staff_offer_price": staff_offer,
+                # 相場スクショと商品画像の2系統を別IDで保持(カンマ無し・サフィックスで区別)
+                "screenshot_ids": f"{market_shot_id}|{item_shot_id}",
+                "review_status": "pending",
+                "submitted_at": _ts_iso,
+                "eval_input": "",
+                "eval_market_image": "",
+                "eval_rank": "",
+                "expert_answer_price": "",
+                "price_gap": "",
+                "overall_mark": "",
+                "eval_comment": "",
+                "reviewed_at": "",
+            })
+            st.session_state["_last_training_submit"] = _ts_iso
+            st.toast("✅ 提出しました!Chosukeの応答を確認しましょう。")
+            st.session_state["_train_nonce"] = st.session_state.get("_train_nonce", 0) + 1
+
+        st.session_state.t_advice_result = advice
+        st.session_state.t_advice_meta = {
+            "brand_ja": brand_ja, "brand_en": brand_en,
+            "product_name": product_name, "staff": staff,
+        }
+
+    # ----- 右: Chosukeの応答 -----
+    with col_output:
+        st.markdown("### " + t("ui.response.header"))
+
+        if st.session_state.t_advice_result is None:
+            if ask_chosuke:
+                st.warning("ブランドと品名を入力してください。")
+            else:
+                st.info(t("ui.response.empty"))
+        else:
+            advice = st.session_state.t_advice_result
+            meta = st.session_state.t_advice_meta
+
+            st.markdown(f"""
+            <div class="chosuke-bubble">
+                <div class="chosuke-name">🦉 Chosuke</div>
+                <div class="chosuke-text">{advice["bubble_msg"]}</div>
+            </div>
+            """, unsafe_allow_html=True)
+
+            if advice.get("range_info"):
+                ri = advice["range_info"]
+                level = ri["level"]
+                if level != "unknown":
+                    st.markdown(f"""
+                    <div class="range-card-{level}">
+                        <strong>相場の幅判定</strong><br>
+                        {ri["message"]}
+                    </div>
+                    """, unsafe_allow_html=True)
+
+            if advice["cost_min"] is not None:
+                _src = advice.get("cost_source")
+                if _src == "実績":
+                    source_label = f"実績ベース(過去 {advice.get('cost_actual_count', 0)} 件)"
+                elif _src == "動的算出":
+                    source_label = "動的算出(ブランド×Rank×年式×ギャラ×付属品)"
+                else:
+                    source_label = "初期値(レビュー実績で精度UP)"
+                st.markdown(f"""
+                <div class="cost-ratio-card">
+                    <div class="cost-ratio-label">推奨原価率 — {source_label}</div>
+                    <div class="cost-ratio-value">{advice["cost_min"]}% 〜 {advice["cost_max"]}%</div>
+                    <div class="cost-ratio-note">最終判断は鑑定士。あくまで参考値です。</div>
+                    <div class="cost-ratio-cheer">🦉 {t("msg.negotiation_prompt")}</div>
+                </div>
+                """, unsafe_allow_html=True)
+
+                # v0.10: 思考過程カード (動的算出時のみ)
+                # 設計インサイト #004: 数字だけでなく「どう考えたか」を見せる
+                if advice.get("cost_thinking"):
+                    st.markdown(f"""
+                    <div class="thinking-card">
+                        <div class="thinking-label">💭 Chosukeの考え(原価率の組み立て)</div>
+                        <div class="thinking-text">{advice["cost_thinking"]}</div>
+                    </div>
+                    """, unsafe_allow_html=True)
+
+            # v0.10.1: 確認動作カード (Layerに関係なく常時表示)
+            # 設計インサイト #004: 鑑定士の手を止めさせ、具体動作(ルーペ/ライト等)を促す。
+            # 原価率の算出方法(実績/動的/初期値)に関わらず、カテゴリが分かれば必ず出す。
+            if advice.get("inspection_tip"):
+                _ins_cat = advice.get("inspect_cat") or "この商品"
+                st.markdown(f"""
+                <div class="inspection-card">
+                    <div class="inspection-label">🔍 手を動かして確認するんだぞ({_ins_cat})</div>
+                    <div class="inspection-text">{advice["inspection_tip"]}</div>
+                </div>
+                """, unsafe_allow_html=True)
+
+            # v0.10.4: 欠品アドバイスカード (一部欠品で品目チェックがあるときだけ)
+            # 設計インサイト #002: 欠品を断定減額せず、観察を促す。
+            if advice.get("missing_advice"):
+                st.markdown(f"""
+                <div class="missing-card">
+                    <div class="missing-label">📦 付属品の欠品について</div>
+                    <div class="missing-text">{advice["missing_advice"]}</div>
+                </div>
+                """, unsafe_allow_html=True)
+
+            if advice.get("year_advice"):
+                st.markdown(f"""
+                <div class="year-card">
+                    <strong>📅 年式判定</strong><br>
+                    {advice["year_advice"]}
+                </div>
+                """, unsafe_allow_html=True)
+
+            # v0.9: 年式タグ反応 (いかりや長介トーン)
+            if advice.get("year_tag_msg"):
+                st.markdown(f"""
+                <div class="year-tag-card">
+                    <strong>🦉 Chosukeより一言</strong><br>
+                    {advice["year_tag_msg"]}
+                </div>
+                """, unsafe_allow_html=True)
+
+            if advice.get("history_msg"):
+                st.markdown(f"""
+                <div class="history-card">
+                    <strong>📊 過去の同商品との比較</strong><br>
+                    {advice["history_msg"]}
+                </div>
+                """, unsafe_allow_html=True)
+
+            # 注意点(統合表示)
+            notes_items = []
+            if advice["brand_notes"]:
+                notes_items.append({"src": "初期登録", "content": advice["brand_notes"]})
+            if not advice["past_feedback"].empty:
+                for _, row in advice["past_feedback"].iterrows():
+                    notes_items.append({
+                        "src": f"フィードバック({row.get('feedback_type','')})",
+                        "content": row["content"]
+                    })
+
+            if notes_items:
+                st.markdown("#### " + t("ui.card.brand_notes"))
+                for item in notes_items:
+                    with st.container(border=True):
+                        st.markdown(f"_{item['src']}_")
+                        st.markdown(item["content"])
+
+            # チェック項目
+            # 「相場根拠は充分か?」を全カテゴリ共通の先頭固定項目として表示
+            st.markdown("#### " + t("ui.card.checklist"))
+            with st.container(border=True):
+                st.checkbox(
+                    "**相場根拠は充分か?**",
+                    key=f"chk_baseline_{meta.get('brand_ja','')}_{meta.get('product_name','')}"
+                )
+                st.caption(
+                    "同型・同年式・同コンディションの取引実績を最低3件は確認したか? "
+                    "1件だけで判断していないか?"
+                )
+
+            # ブランド固有のチェックリスト
+            if not advice["checklists"].empty:
+                for idx, row in advice["checklists"].iterrows():
+                    chk_key = f"chk_{meta.get('brand_ja','')}_{idx}_{row['check_item']}"
+                    with st.container(border=True):
+                        st.checkbox(f"**{row['check_item']}**", key=chk_key)
+                        st.caption(row["hint"])
+
+            # フィードバック欄
+            st.markdown("---")
+            st.markdown("#### " + t("ui.card.feedback"))
+            st.caption(
+                "足りなかった確認事項、ズレてた相場感などがあれば教えてください。"
+                "送信したフィードバックは、ナレッジ管理モードで内容を確認のうえ「正式化」することで、"
+                "次回以降のChosukeの応答に反映されます。"
+            )
+
+            with st.form("training_feedback_form"):
+                fb_type = st.selectbox(
+                    "フィードバック種別",
+                    ["不足してた確認事項", "相場感のズレ", "ノウハウ追加", "その他"]
+                )
+                fb_content = st.text_area("内容", placeholder="例: このブランドのこの年代は素材が変わったから注意した方がいい")
+                fb_submit = st.form_submit_button("📤 Chosukeに教える")
+
+                if fb_submit and fb_content:
+                    append_feedback({
+                        "timestamp": datetime.now().isoformat(timespec="seconds"),
+                        "staff": meta.get("staff", ""),
+                        "brand_ja": meta.get("brand_ja", ""),
+                        "product_name": meta.get("product_name", ""),
+                        "feedback_type": fb_type,
+                        "content": fb_content,
+                        "promoted": False,
+                    })
+                    st.success(
+                        "Chosukeに伝えました。"
+                        "**ナレッジ管理モード → フィードバックタブ** で「正式化」にチェックを入れて保存すると、"
+                        "次回以降の応答に反映されます。"
+                    )
+
+
+# ============================================================
+# 画面2: ナレッジ管理モード
+# ============================================================
+
+
+def _tk(base: str) -> str:
+    """トレーニング入力ウィジェットのキー(査定モードと衝突しない専用 nonce 付き)。"""
+    n = st.session_state.get("_train_nonce", 0)
+    return f"train_{base}_{n}"
+
+
+def _show_shot_group(shot_id: str, title: str, key_prefix: str, point_label_overall: bool = False):
+    """指定 shot_id の画像群を、査定レビューと同じ画面内トグル方式で表示する。
+    point_label_overall=True のとき idx0 を『全体』、idx>=1 を『査定ポイントN』とバッジ表示。"""
+    if not shot_id:
+        return
+    try:
+        imgs = be.load_screenshots(shot_id)
+    except Exception as e:
+        st.caption(f"画像の取得でエラー: {e}")
+        return
+    if not imgs:
+        return
+    st.markdown(f"##### {title}")
+    st.caption("ボタンを押すと、同じ画面内で拡大/縮小できます。")
+    _exp_key = f"train_expanded::{shot_id}"
+    _expanded = st.session_state.get(_exp_key)
+    if _expanded is not None and 0 <= _expanded < len(imgs):
+        st.image(imgs[_expanded], use_container_width=True)
+        if point_label_overall:
+            cap = "全体画像" if _expanded == 0 else f"査定ポイント {_expanded}"
+            st.caption(f"📍 {cap}")
+        if st.button("🔽 縮小 / Shrink", key=f"{key_prefix}_shrink"):
+            st.session_state[_exp_key] = None
+            st.rerun()
+    else:
+        cols = st.columns(min(len(imgs), 3))
+        for i, img_bytes in enumerate(imgs):
+            with cols[i % len(cols)]:
+                st.image(img_bytes, width=160)
+                if point_label_overall:
+                    badge = "🟢 全体" if i == 0 else f"🔍 ポイント{i}"
+                else:
+                    badge = f"🖼️ {i+1}"
+                if st.button(f"{badge} / Expand", key=f"{key_prefix}_expand_{i}"):
+                    st.session_state[_exp_key] = i
+                    st.rerun()
 
 
 def training_review_mode():
-    """🎓📋 トレーニング評価モード(管理者側)。
-    staff が提出したトレーニングを、現物画像を見ながら4軸で評価する:
-      ①商品入力 ②相場参考画像 ③Rank ④買取金額(正解値を入れてズレを自動計算)
+    """🎓 トレーニング評価モード(管理者側)。
+    staff が提出したトレーニングを、現物画像(全体+査定ポイント)と相場参考スクショを
+    見ながら4軸で評価する: ①商品入力 ②相場参考画像 ③Rank ④買取金額。
     点数化はせず、総合は花丸3段階マークで返す。"""
     st.markdown("## 🎓 " + t("ui.mode.training_review"))
     st.caption(t("ui.training_review.caption"))
@@ -3059,8 +3535,6 @@ def training_review_mode():
         return
 
     pending_sorted_all = pending.sort_values("timestamp", ascending=False).reset_index(drop=True)
-
-    # staff 絞り込み
     staff_list = sorted({str(s).strip() for s in pending_sorted_all["staff"].fillna("").tolist() if str(s).strip()})
     sel_staff = st.selectbox("staff絞り込み", ["(全員)"] + staff_list, key="train_review_staff_filter")
     if sel_staff == "(全員)":
@@ -3093,7 +3567,6 @@ def training_review_mode():
 
     st.markdown(f"#### 📋 提出内容({sel_idx + 1} / {len(pending_sorted)} 件目)")
 
-    # --- staff の提出した査定情報 ---
     with st.container(border=True):
         st.markdown(f"**受験者**: {target.get('staff', '')}")
         st.markdown(f"**ブランド**: {target.get('brand_ja','')} / {target.get('brand_en','')}")
@@ -3107,38 +3580,23 @@ def training_review_mode():
             st.markdown(f"**相場メモ**: ${pmin} 〜 ${pmax}")
         st.markdown(f"**🟦 staff の買取金額**: **${target.get('staff_offer_price', '')}**")
 
-    # --- 商品画像(全体=idx0 / 査定ポイント=idx1以降)。査定レビューと同じトグル方式 ---
-    shot_id = str(target.get("screenshot_ids", "") or "").strip()
-    if shot_id:
-        with st.container(border=True):
-            st.markdown("##### 🖼️ 商品画像(全体 + 査定ポイント)")
-            try:
-                imgs = be.load_screenshots(shot_id)
-            except Exception as e:
-                imgs = []
-                st.caption(f"画像の取得でエラー: {e}")
-            if imgs:
-                st.caption("ボタンを押すと、同じ画面内で拡大/縮小できます。")
-                _exp_key = f"train_expanded::{shot_id}"
-                _expanded = st.session_state.get(_exp_key)
-                if _expanded is not None and 0 <= _expanded < len(imgs):
-                    st.image(imgs[_expanded], use_container_width=True)
-                    _cap = "全体画像" if _expanded == 0 else f"査定ポイント {_expanded}"
-                    st.caption(f"📍 {_cap}")
-                    if st.button("🔽 縮小 / Shrink", key=f"train_shrink_{shot_id}"):
-                        st.session_state[_exp_key] = None
-                        st.rerun()
-                else:
-                    _cols = st.columns(min(len(imgs), 3))
-                    for i, img_bytes in enumerate(imgs):
-                        with _cols[i % len(_cols)]:
-                            _badge = "🟢 全体" if i == 0 else f"🔍 ポイント{i}"
-                            st.image(img_bytes, width=160)
-                            if st.button(f"{_badge} / Expand", key=f"train_expand_{shot_id}_{i}"):
-                                st.session_state[_exp_key] = i
-                                st.rerun()
-            else:
-                st.caption("⚠️ 画像が保存されていません。")
+    # 画像2系統: screenshot_ids = "ts::market|ts::item"
+    raw_ids = str(target.get("screenshot_ids", "") or "").strip()
+    market_id, item_id = "", ""
+    if "|" in raw_ids:
+        parts = raw_ids.split("|", 1)
+        market_id = parts[0].strip()
+        item_id = parts[1].strip() if len(parts) > 1 else ""
+    elif raw_ids:
+        # 旧形式の保険(単一ID)。商品画像扱いにする。
+        item_id = raw_ids
+
+    with st.container(border=True):
+        _show_shot_group(item_id, "🖼️ 商品画像(全体 + 査定ポイント)",
+                         key_prefix=f"item_{target_idx}", point_label_overall=True)
+    with st.container(border=True):
+        _show_shot_group(market_id, "📊 相場参考スクショ",
+                         key_prefix=f"market_{target_idx}", point_label_overall=False)
 
     # --- 4軸評価フォーム ---
     st.markdown("##### 🦉 裕平さんの評価(現物を見ながら)")
@@ -3165,7 +3623,7 @@ def training_review_mode():
             t("ui.training_review.mark.yoku"): "yoku",
             t("ui.training_review.mark.ganbaro"): "ganbaro",
         }
-        mark_label = st.radio("総合評価", list(_MARKS.keys()), horizontal=True,
+        mark_label = st.radio(t("ui.training_review.mark"), list(_MARKS.keys()), horizontal=True,
                               key=f"tr_mark_{target_idx}", label_visibility="collapsed")
 
         eval_comment = st.text_area(
