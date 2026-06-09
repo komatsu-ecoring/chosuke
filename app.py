@@ -3499,9 +3499,36 @@ def _training_my_results():
         brand = row.get("brand_ja", "")
         product = row.get("product_name", "")
         mark = _MARK_DISP.get(str(row.get("overall_mark", "")), "")
+        _row_ts = str(row.get("timestamp", "")).replace(":", "").replace("-", "").replace("T", "")
         with st.container(border=True):
             st.markdown(f"#### {mark}")
             st.caption(f"{ts} / {brand} / {product}")
+
+            # --- 自分が当時どう査定したか(振り返り用・提出内容フル) ---
+            with st.expander("📋 自分の査定内容を見る", expanded=True):
+                st.markdown(f"**ブランド**: {brand} / {row.get('brand_en','')}")
+                st.markdown(f"**品名**: {product}")
+                st.markdown(f"**製造年**: {row.get('year','') or '—'}")
+                st.markdown(f"**付属品**: {row.get('accessories','') or '—'}")
+                st.markdown(f"**暫定rank**: {row.get('rank','') or '—'}")
+                _pmin = row.get("price_min_usd", "")
+                _pmax = row.get("price_max_usd", "")
+                if _pmin and _pmax:
+                    st.markdown(f"**相場メモ**: ${_pmin} 〜 ${_pmax}")
+                # 自分がアップした画像(商品画像 + 相場参考スクショ)
+                raw_ids = str(row.get("screenshot_ids", "") or "").strip()
+                _mkt_id, _item_id = "", ""
+                if "|" in raw_ids:
+                    _parts = raw_ids.split("|", 1)
+                    _mkt_id = _parts[0].strip()
+                    _item_id = _parts[1].strip() if len(_parts) > 1 else ""
+                elif raw_ids:
+                    _item_id = raw_ids
+                _show_shot_group(_item_id, "🖼️ 商品画像(全体 + 査定ポイント)",
+                                 key_prefix=f"my_item_{_row_ts}", point_label_overall=True)
+                _show_shot_group(_mkt_id, "📊 相場参考スクショ",
+                                 key_prefix=f"my_market_{_row_ts}", point_label_overall=False)
+
             # 自分の提出 vs 正解レンジ
             emin = row.get("expert_answer_min", "")
             emax = row.get("expert_answer_max", "")
