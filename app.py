@@ -227,6 +227,14 @@ DEFAULT_STAFF_ROSTER = ["Soknan", "Bunlong", "Sreynich", "Dany", "Xing", "Pichi"
 # ============================================================
 RANK_OPTIONS = ["未定", "N", "S", "A", "AB", "B+", "B", "B-", "BC", "C", "D"]
 
+
+def _rank_display(value: str) -> str:
+    """Rank選択肢の表示。記号(N/S/A/B…)はそのまま、「未定」だけ英語を併記する。
+    内部値・履歴保存・照合(rank != '未定' 等)はすべて日本語値のまま。"""
+    if value == "未定":
+        return "未定 / TBD"
+    return value
+
 # ============================================================
 # カテゴリ選択肢(Eco Ring社内システム準拠)
 # ============================================================
@@ -265,6 +273,20 @@ CATEGORY_EN_MAP = {
     "靴": "SHOES",
     "高級ジュエリー": "FINE JEWELRY",
 }
+
+# 「指定なし」を含むカテゴリ選択肢の表示用英訳(format_func 用)。
+# ※ selectbox の内部値・履歴保存・照合はすべて CATEGORY_OPTIONS(日本語)のまま。
+#    表示だけ「日本語 / English」併記にして、クメール語/英語環境のstaffに手がかりを出す。
+CATEGORY_LABEL_EN = dict(CATEGORY_EN_MAP)
+CATEGORY_LABEL_EN["指定なし"] = "None"
+
+
+def _category_display(value: str) -> str:
+    """カテゴリ選択肢の表示文字列。内部値(日本語)は変えず、表示だけ英語を併記する。"""
+    en = CATEGORY_LABEL_EN.get(value)
+    if en and en != value:
+        return f"{value} / {en}"
+    return value
 
 # ブランドマスタの category 表記 → カテゴリ選択肢 へのマッピング
 # (既存ブランドマスタの category 表記揺れを吸収するため)
@@ -1276,25 +1298,16 @@ def build_missing_items_advice(missing_items: list, brand_en: str = "") -> str:
     if not missing_items:
         return ""
 
-    # 個別品目ごとの観察促し (キーは欠品チェックリストの項目名と一致させる)
-    item_tips = {
-        "鍵・カデナ": (
-            "鍵・カデナが無いんだろぉ?ここは大事だぞ。"
-            "鍵・カデナ・クロシェットは<b>単体でも相場がある</b>からな、欠品で即減額と決めつけるなよ!"
-            "ただし純正の鍵が揃ってる個体のほうが当然強い。"
-            "クロシェット(鍵入れの革)やレインカバーも一緒に確認するんだぞ!"
-        ),
-        "ギャランティーカード": (
-            "ギャラがカードが無いんだな。時計・ジュエリーだと評価に響くから、"
-            "他の手がかり(箱・保証書の控え・購入店情報)で補えないか確認しろよ!"
-        ),
-        "箱": "箱が無いのか。フルセット個体と比べると見劣りするが、本体評価が主だ。箱だけ欲しい客もいるから記録はしとけよ!",
-        "保存袋": "保存袋(ダストバッグ)の欠品だな。減額幅は小さいが、フルセット感は落ちる。記録には残しとけよ!",
-        "ストラップ": (
-            "ストラップが無いんだろぉ?ショルダーの有無は使い勝手に直結するからな、"
-            "<b>純正ストラップは単体でも値がつく</b>こともあるぞ。型番に合うものか確認しろ!"
-        ),
-        "取扱説明書(取説)": "取説の欠品か。これは減額影響は小さいやつだ。ただフルセット表記はできないから記録はしとけ!",
+    # 個別品目ごとの観察促し。
+    # キーは欠品チェックリストの項目名(日本語)と一致させる必要があるため日本語のまま温存し、
+    # 表示するセリフ本文だけ t() で言語切替する。
+    item_tip_keys = {
+        "鍵・カデナ": "msg.missing.keys",
+        "ギャランティーカード": "msg.missing.gc",
+        "箱": "msg.missing.box",
+        "保存袋": "msg.missing.dustbag",
+        "ストラップ": "msg.missing.strap",
+        "取扱説明書(取説)": "msg.missing.manual",
     }
 
     parts = []
@@ -1302,45 +1315,41 @@ def build_missing_items_advice(missing_items: list, brand_en: str = "") -> str:
     for item in missing_items:
         # 「その他: 〇〇」の自由記述はそのまま拾う
         if item.startswith("その他:"):
-            parts.append(f"{item[4:].strip()}…これも記録して、相場への影響を考えるんだぞ!")
+            parts.append(t("dyn.missing.other_freetext", item=item[4:].strip()))
             continue
-        if item in item_tips:
-            parts.append(item_tips[item])
+        if item in item_tip_keys:
+            parts.append(t(item_tip_keys[item]))
             matched.add(item)
 
     # チェックされたが個別tip未定義の品目はまとめて一言
     others = [i for i in missing_items if i not in matched and not i.startswith("その他:")]
     if others:
-        parts.append(
-            f"あと {('・'.join(others))} も欠品だな。一つずつ、相場にどう響くか考えて記録するんだぞ!"
-        )
+        parts.append(t("dyn.missing.others", items="・".join(others)))
 
     return " ".join(parts)
 
 
 def _category_inspection_tip(cat: str) -> str:
     """カテゴリ別の『促す具体動作』を返す (設計インサイト #004)。
-    時計・ジュエリーはルーペ必須、バッグはライト、等。"""
-    tips = {
-        "時計": "ルーペで文字盤・針・インデックス・リューズの刻印まで見るんだぞ!夜光のヤケや交換痕も見逃すな!",
-        "高級ジュエリー": "ルーペで刻印・石の状態・爪の浮きまで確認しろ!鑑定書とも擦り合わせるんだぞ!",
-        "ジュエリー": "ルーペで刻印と石の留めをよーく見ろ!メッキ剥がれや変色も要チェックだ!",
-        "ファッションジュエリー": "ルーペで刻印・メッキの状態を見ろよ!安く見えても侮るなよ!",
-        "バッグ": "ライト当てて、角擦れ・内装・金具のメッキまで隅々見るんだぞ!",
-        "服": "タグ・縫製・シミ・毛玉を目視でしっかり確認しろ!サイズ表記も忘れるなよ!",
-        "靴": "ソール・ヒール・型崩れを見ろ!サイズ需要も頭に入れとけ!",
-        "SLG": "角のスレ・型崩れ・内側の汚れをライトで見るんだぞ!小物でも手は抜くな!",
-        "ベルト": "穴の伸び・バックルの傷・レザーのひび割れを確認しろ!",
-        "スカーフ": "シミ・ほつれ・色あせを明るいとこで広げて見ろよ!",
-        "メガネ・サングラス": "レンズの傷・フレームの歪み・刻印をルーペで確認だ!",
-        "電子機器": (
-            "おっと、電子機器だな!まず<b>アクティベーションロック(iPhoneなら『探す』、各種アカウント連携)</b>が"
-            "解除されてるか必ず確認しろ!ロック残ったままだと売り物にならんぞ!"
-            "それから<b>型番・容量(GB)・カラー</b>を本体と付属品で照合だ。"
-            "バッテリーの状態、画面のドット抜け・焼き付き、起動確認も抜かりなくな!"
-        ),
+    時計・ジュエリーはルーペ必須、バッグはライト、等。
+    キー(カテゴリ名)は inspect_cat と照合する内部キーなので日本語のまま温存し、
+    表示する確認動作セリフだけ t() で言語切替する。"""
+    tip_keys = {
+        "時計": "msg.inspect.watch",
+        "高級ジュエリー": "msg.inspect.fine_jewelry",
+        "ジュエリー": "msg.inspect.jewelry",
+        "ファッションジュエリー": "msg.inspect.fashion_jewelry",
+        "バッグ": "msg.inspect.bag",
+        "服": "msg.inspect.clothes",
+        "靴": "msg.inspect.shoes",
+        "SLG": "msg.inspect.slg",
+        "ベルト": "msg.inspect.belt",
+        "スカーフ": "msg.inspect.scarf",
+        "メガネ・サングラス": "msg.inspect.glasses",
+        "電子機器": "msg.inspect.electronics",
     }
-    return tips.get(cat, "ライト当てて、細部まで一つずつ確認するんだぞ!")
+    key = tip_keys.get(cat)
+    return t(key) if key else t("msg.inspect.default")
 
 
 def build_cost_thinking_text(brand_ja: str, calc: dict, rank: str, year_bucket: str,
@@ -1359,52 +1368,47 @@ def build_cost_thinking_text(brand_ja: str, calc: dict, rank: str, year_bucket: 
     base_val = bd[0][1]
 
     parts = []
-    parts.append(f"え〜と、{brand_ja}だろぉ?まず基準は <b>{base_val}%</b> あたりから始めるかぁ…")
+    parts.append(t("dyn.think.base", brand=brand_ja, base=base_val))
 
-    # 各補正を独り言化
+    # 各補正を独り言化。
+    # label(日本語)は breakdown 由来の照合キーなので変更せず、部分一致で分岐する。
+    # 表示セリフだけ t() 化。{val} には符号付き文字列(+3 / -7)を渡す。
     for label, val in bd[1:]:
+        sval = f"{val:+d}"
         if "カテゴリ" in label:
-            parts.append(f"今回は主力じゃないカテゴリだろぉ?{label}で <b>{val:+d}%</b>、ここは慎重にな!")
+            parts.append(t("dyn.think.subcat", label=label, val=sval))
         elif "Rank" in label:
             if val > 0:
-                parts.append(f"{label}か、状態が良さそうなんで <b>{val:+d}%</b> 上げてもいいかな…")
+                parts.append(t("dyn.think.rank_up", label=label, val=sval))
             else:
-                parts.append(f"{label}だろぉ?状態を考えると <b>{val:+d}%</b> は見ておかないとな!")
+                parts.append(t("dyn.think.rank", label=label, val=sval))
         elif "ギャラ" in label:
             if val < 0:
-                parts.append(f"ギャランティーカードが無いんだろぉ?これは痛い、<b>{val:+d}%</b> だ。例外もあるが基本は減額だぞ!")
+                parts.append(t("dyn.think.gc_none", val=sval))
             else:
-                parts.append(f"ギャラ有りだな、<b>{val:+d}%</b>。")
+                parts.append(t("dyn.think.gc_has", val=sval))
         elif "付属品" in label:
-            parts.append(f"付属品の状態で <b>{val:+d}%</b> ってとこか…")
+            parts.append(t("dyn.think.accessories", val=sval))
         elif "定番" in label:
-            parts.append(f"おっと、これは定番モデルだろぉ?需要が安定してるから上限を <b>{val:+d}%</b> 上振れさせてもいいかもな!")
+            parts.append(t("dyn.think.iconic", val=sval))
         elif "年式(上限)" in label:
-            parts.append(f"そんで年代を考えるとな…天井そのものを <b>{val:+d}%</b> 抑えとくのが妥当だろぉ?古いものは強気にいきすぎるなよ!")
+            parts.append(t("dyn.think.year_ceiling", val=sval))
 
     # 年式幅の独り言 (v0.10.2: 年式が下限を広げていることを思考過程に見せる)
     # 年式は上限ではなく「上限からどれだけ下げて下限を取るか(=慎重に見る幅)」に効く。
     # これを独り言に出さないと「年式が反映されてない」ように見えるため明示する。
     width = calc.get("width", 0)
     if width:
-        year_phrase = {
-            "recent": "近年モデルだから、下振れ幅は小さめでいい",
-            "semi_new": "準新作だから、下振れ幅はちょい見ておく",
-            "mid": "中堅年式だから、下振れ幅はそこそこ見ておく",
-            "old": "年代物だろぉ?状態リスクがあるから下振れ幅は広めに取る",
-        }.get(year_bucket, "年式の手がかりが薄いから、下振れ幅は中堅相当で見ておく")
-        parts.append(
-            f"そんで{year_phrase}…上限から <b>−{width}%</b> 下げたあたりを下限の目安にするか。"
-        )
+        phrase_key = {
+            "recent": "dyn.think.year_width.recent",
+            "semi_new": "dyn.think.year_width.semi_new",
+            "mid": "dyn.think.year_width.mid",
+            "old": "dyn.think.year_width.old",
+        }.get(year_bucket, "dyn.think.year_width.unknown")
+        parts.append(t("dyn.think.year_width_line", phrase=t(phrase_key), width=width))
 
-    parts.append(
-        f"…というわけで、推奨原価率は <b>{calc['low']}〜{calc['high']}%</b> ってとこだ💡 "
-        f"上限{calc['high']}%が攻めていい天井、そこから状態次第で詰めていくんだぞ!"
-    )
-    parts.append(
-        "でもな、これはあくまで目安だぞ!例外品もあるからな、決めつけるなよ!"
-        "最終判断はあんた自身だ。"
-    )
+    parts.append(t("dyn.think.conclusion", low=calc["low"], high=calc["high"]))
+    parts.append(t("msg.think.disclaimer"))
 
     return " ".join(parts)
 
@@ -1450,7 +1454,7 @@ def chosuke_advise(brand_ja: str, brand_en: str, product_name: str, year: str,
         cost_min = None
         cost_max = None
         category = "不明"
-        brand_notes = "このブランドはまだナレッジに登録されていません。"
+        brand_notes = t("msg.brand_notes.unregistered")
 
     # ----- 促し動作カテゴリの確定 (v0.10.1: Layer判定とは独立) -----
     # ルーペ/ライト等の「確認動作」は原価率の算出方法(Layer)とは無関係に、
@@ -1558,7 +1562,7 @@ def chosuke_advise(brand_ja: str, brand_en: str, product_name: str, year: str,
 
     # 吹き出しメッセージ (v0.10: いかりや長介トーンに統一 - 設計インサイト #004)
     bubble_parts = []
-    bubble_parts.append(f"お、{brand_ja}({brand_en})の {product_name} だな。")
+    bubble_parts.append(t("dyn.bubble.intro", brand=brand_ja, brand_en=brand_en, product=product_name))
 
     # 定番モデル反応 (v0.9)
     iconic_str = ""
@@ -1569,47 +1573,30 @@ def chosuke_advise(brand_ja: str, brand_en: str, product_name: str, year: str,
         bubble_parts.append(tr("iconic_match"))
 
     if screenshots_count > 0:
-        bubble_parts.append(f"スクショ{screenshots_count}枚、確認したぞ。")
+        bubble_parts.append(t("dyn.bubble.screenshots_ok", n=screenshots_count))
     else:
-        bubble_parts.append("スクショは取り込まれてないんだろぉ?あるなら入れてくれよ。")
+        bubble_parts.append(t("msg.bubble.screenshots_none"))
 
     range_info = None
     if price_min > 0 and price_max > 0:
         range_info = market_range_check(price_min, price_max)
-        bubble_parts.append(f"相場メモ ${price_min:.0f}〜${price_max:.0f} を確認したぞ。")
+        bubble_parts.append(t("dyn.bubble.market_memo", pmin=f"{price_min:.0f}", pmax=f"{price_max:.0f}"))
         bubble_parts.append(range_info["message"])
 
     if rank and rank != "未定":
-        bubble_parts.append(
-            f"暫定rankは <b>{rank}</b> だな。その判断、本当に確かなのかぁ?"
-            f"下のチェック項目を一つずつ見て、細部の状態と擦り合わせるんだぞ!"
-        )
+        bubble_parts.append(t("dyn.bubble.rank_tentative", rank=rank))
     else:
-        bubble_parts.append(
-            "rankはまだ未定だな。下の確認項目を見ながら、細部の状態をよーく観察してから判定しろよ!"
-        )
+        bubble_parts.append(t("msg.bubble.rank_undecided"))
 
     if cost_min is not None:
         if cost_source == "実績":
-            bubble_parts.append(
-                f"このブランド+品名の過去実績({cost_actual_count}件)から、"
-                f"推奨原価率は <b>{cost_min}% 〜 {cost_max}%</b> ってとこだ。あくまで目安だぞ!"
-            )
+            bubble_parts.append(t("dyn.bubble.cost_actual", n=cost_actual_count, cmin=cost_min, cmax=cost_max))
         elif cost_source == "動的算出":
-            bubble_parts.append(
-                "推奨原価率は下のカードに、わしの考えと一緒に出しておいたぞ。"
-                "数字だけ見るんじゃないぞ?どう組み立てたかも、ちゃんと追ってな!"
-            )
+            bubble_parts.append(t("msg.bubble.cost_dynamic"))
         else:
-            bubble_parts.append(
-                f"このブランドの推奨原価率(初期値)は <b>{cost_min}% 〜 {cost_max}%</b> だ。"
-                f"目安として頭に入れときな!"
-            )
+            bubble_parts.append(t("dyn.bubble.cost_initial", cmin=cost_min, cmax=cost_max))
     else:
-        bubble_parts.append(
-            "このブランドはまだナレッジに登録されてないんだろぉ?"
-            "今回の査定が終わったら、ナレッジ管理モードで情報を残しとけよ。次の査定がぐっと楽になるぞ!"
-        )
+        bubble_parts.append(t("msg.bubble.not_registered_close"))
 
     bubble_msg = " ".join(bubble_parts)
 
@@ -1661,16 +1648,12 @@ def chosuke_advise(brand_ja: str, brand_en: str, product_name: str, year: str,
                 avg_min = past["pmin"].mean()
                 avg_max = past["pmax"].mean()
                 count = len(past)
-                history_msg = (
-                    f"過去の同じ商品({brand_ja} {product_name})は "
-                    f"<b>${avg_min:.0f}〜${avg_max:.0f}</b>(n={count})の入力が多いぞ。"
-                )
+                history_msg = t("dyn.bubble.history", brand=brand_ja, product=product_name,
+                                amin=f"{avg_min:.0f}", amax=f"{avg_max:.0f}", n=count)
                 if price_min > 0 and price_max > 0:
                     if abs(price_max - avg_max) > avg_max * 0.15 or abs(price_min - avg_min) > avg_min * 0.15:
-                        history_msg += (
-                            f" おっと、今回の入力 ${price_min:.0f}〜${price_max:.0f} は過去の傾向とズレてるな。"
-                            f"美品だったり付属品がフルだったり、何か違いがあるのかぁ?理由を説明できるようにしとけよ!"
-                        )
+                        history_msg += t("dyn.bubble.history_deviation",
+                                         pmin=f"{price_min:.0f}", pmax=f"{price_max:.0f}")
 
     return {
         "bubble_msg": bubble_msg,
@@ -1971,11 +1954,11 @@ def appraisal_mode():
     # 見出し行に上部クリアボタンを併設(見出しの右端)
     head_l, head_r = st.columns([3, 1])
     with head_l:
-        st.markdown("## 🔍 査定モード")
+        st.markdown("## 🔍 " + t("ui.mode.appraisal"))
     with head_r:
         st.write("")  # 縦位置をタイトルにそろえる微調整
         st.button(t("ui.btn.clear"), key="apprai_clear_top", use_container_width=True,
-                  help="商品情報と相場メモをクリアします(担当staffは残ります)",
+                  help=t("ui.btn.clear.help"),
                   on_click=_request_appraisal_clear)
     st.caption(t("ui.appraisal.caption"))
 
@@ -2020,15 +2003,15 @@ def appraisal_mode():
             placeholder=t("ui.staff.placeholder"),
             key="apprai_staff_select",
             label_visibility="collapsed",
-            help="必須項目です。誰が査定したかを記録します。"
+            help=t("ui.staff.help")
         )
 
         if _is_admin and _staff_choice == _STAFF_NEW_OPTION:
             _staff_new = st.text_input(
                 "新しいstaff名",
                 key="apprai_staff_new",
-                placeholder="例: Pichi",
-                help="入力した名前は次回から選択肢に追加されます(管理者のみ)。"
+                placeholder=t("ui.settings.staff_placeholder"),
+                help=t("ui.staff.add_help")
             ).strip()
             staff = _staff_new
             if _staff_new:
@@ -2102,16 +2085,17 @@ def appraisal_mode():
         selected_category = st.selectbox(
             t("ui.category.label"),
             CATEGORY_OPTIONS,
+            format_func=_category_display,
             key=_k("category"),
-            help="カテゴリを選ぶと、上のブランドリストがそのカテゴリのブランドのみに絞り込まれます。「指定なし」で全ブランド表示。"
+            help=t("ui.category.help")
         )
 
         if sel_label is None:
             brand_ja = ""
             brand_en = ""
         elif sel_label == "(その他/未登録)":
-            brand_ja = st.text_input("ブランド名(日本語)", key=_k("brand_custom_ja"))
-            brand_en = st.text_input("ブランド名(英語)", key=_k("brand_custom_en"))
+            brand_ja = st.text_input(t("ui.brand.name_ja"), key=_k("brand_custom_ja"))
+            brand_en = st.text_input(t("ui.brand.name_en"), key=_k("brand_custom_en"))
         else:
             parts = sel_label.split("  /  ")
             brand_ja = parts[0]
@@ -2123,7 +2107,7 @@ def appraisal_mode():
         with col_y:
             year = st.text_input(t("ui.year.label"), placeholder=t("ui.year.placeholder"), key=_k("year"))
         with col_r:
-            rank = st.selectbox(t("ui.rank.label"), RANK_OPTIONS, key=_k("rank"))
+            rank = st.selectbox(t("ui.rank.label"), RANK_OPTIONS, format_func=_rank_display, key=_k("rank"))
 
         # 付属品は単独行(直下に「一部欠品」の詳細チェックリストを出すため)
         # ※ option の値("フルセット"等)は履歴保存・判定ロジックで使う固定キーなので翻訳しない。
@@ -2158,7 +2142,7 @@ def appraisal_mode():
                             missing_items.append(item)
 
                 # 「もっと見る」展開
-                with st.expander("▼ もっと見る(細かい項目)"):
+                with st.expander(t("ui.more_fields")):
                     extra_items = ["内箱", "外箱", "化粧箱", "レシート・購入証明",
                                    "シリアルカード", "ショッピングバッグ(紙袋)",
                                    "予備コマ", "タグ"]
@@ -2191,7 +2175,7 @@ def appraisal_mode():
             format_func=lambda v: t(_GC_LABEL.get(v, v)),
             horizontal=True,
             key=_k("gc"),
-            help="時計・ジュエリー・一部バッグで査定額に影響します。該当しない商品は「対象外 / 不問」。"
+            help=t("ui.gc.help")
         )
         gc_status = {"有り": "has", "無し": "none", "対象外 / 不問": "na"}[gc_choice]
 
@@ -2201,21 +2185,19 @@ def appraisal_mode():
             is_microchip = st.checkbox(
                 "マイクロチップ品(2021年以降)",
                 key=_k("microchip"),
-                help="2021年以降のCHANEL等はシリアルがマイクロチップ化(ランダム番号)。"
-                     "外観からの年式判定不可。チェックすると年式判定ロジックをスキップします。"
+                help=t("ui.microchip.help")
             )
         with col_unknown:
             is_year_unknown = st.checkbox(
                 "年式不明",
                 key=_k("year_unknown"),
-                help="製造年が判定できない場合にチェック。"
+                help=t("ui.year_unknown.help")
             )
         with col_random:
             is_random_serial = st.checkbox(
                 "ランダムシリアル品(ロレックス2010年以降)",
                 key=_k("random_serial"),
-                help="ロレックスは2010年頃からシリアルがランダム化され、シリアルからの年式特定が不可。"
-                     "チェックすると年式判定ロジックをスキップします。"
+                help=t("ui.random_serial.help")
             )
 
         # 履歴・応答ロジック用に付属品情報を文字列化
@@ -2263,9 +2245,9 @@ def appraisal_mode():
             brand_filled = bool(brand_ja and brand_ja.strip())
             ready = staff_filled and brand_filled
             if not staff_filled:
-                btn_help = "担当staffを入力してください(必須)"
+                btn_help = t("ui.staff.need")
             elif not brand_filled:
-                btn_help = "ブランドを選択してください(必須)"
+                btn_help = t("ui.brand.need")
             else:
                 btn_help = None
             ask_chosuke = st.button(
@@ -2278,7 +2260,7 @@ def appraisal_mode():
         with col_btn2:
             # v0.10.7: 上部クリアと同様 on_click 方式に統一(確実にクリアを効かせる)
             st.button(t("ui.btn.reset"), use_container_width=True,
-                      help="商品情報と相場メモをクリアします(担当staffは残ります)",
+                      help=t("ui.btn.clear.help"),
                       on_click=_request_appraisal_clear)
 
     # ----- ボタン押下処理 -----
@@ -2345,7 +2327,7 @@ def appraisal_mode():
 
         if st.session_state.advice_result is None:
             if ask_chosuke:
-                st.warning("ブランドと品名を入力してください。")
+                st.warning(t("ui.need_brand_product"))
             else:
                 st.info(t("ui.response.empty"))
         else:
@@ -2691,14 +2673,14 @@ def review_mode():
 
     # v0.12.3: staff絞り込み
     staff_list = sorted({str(s).strip() for s in pending_sorted_all["staff"].fillna("").tolist() if str(s).strip()})
-    staff_filter_options = ["(全員)"] + staff_list
+    staff_filter_options = [t("ui.filter.all")] + staff_list
     selected_staff = st.selectbox(
-        "staff絞り込み",
+        t("ui.filter.staff"),
         staff_filter_options,
         key="review_staff_filter",
         help="特定のstaffの査定だけを下のドロップダウンに表示します。",
     )
-    if selected_staff == "(全員)":
+    if selected_staff == t("ui.filter.all"):
         pending_sorted = pending_sorted_all
     else:
         pending_sorted = pending_sorted_all[
@@ -2719,7 +2701,7 @@ def review_mode():
         return f"{ts} / {staff} / {brand} / {product}".strip(" /")
 
     options = list(range(len(pending_sorted)))
-    _filter_suffix = "" if selected_staff == "(全員)" else f" / staff={selected_staff}"
+    _filter_suffix = "" if selected_staff == t("ui.filter.all") else f" / staff={selected_staff}"
     selected_idx = st.selectbox(
         f"レビュー対象を選択(全{len(pending_sorted)}件・新しい順{_filter_suffix})",
         options,
@@ -2760,7 +2742,7 @@ def review_mode():
                 except Exception as e:
                     st.caption(f"画像の取得でエラー: {e}")
             if imgs:
-                st.caption("ボタンを押すと、同じ画面内で拡大/縮小できます。")
+                st.caption(t("ui.shot.toggle_caption"))
                 # 拡大中の画像インデックスを shot_id 単位で session_state に保持。
                 # data: URL の別タブ遷移はブラウザにブロックされるため、画面内トグル方式にする。
                 _exp_key = f"expanded_shot::{shot_id}"
@@ -2845,7 +2827,7 @@ def review_mode():
             df.at[target_idx, "review_status"] = "skipped"
             df.at[target_idx, "reviewed_at"] = datetime.now().isoformat(timespec="seconds")
             be.write_sheet("appraisal_history", df)
-            st.info("スキップしました。")
+            st.info(t("ui.training_review.skipped"))
             st.rerun()
 
 
@@ -2917,15 +2899,15 @@ def _training_submit_panel():
             placeholder=t("ui.staff.placeholder"),
             key="train_examinee_select",
             label_visibility="collapsed",
-            help="必須項目です。誰が査定したかを記録します。"
+            help=t("ui.staff.help")
         )
 
         if _is_admin and _staff_choice == _STAFF_NEW_OPTION:
             _staff_new = st.text_input(
                 "新しいstaff名",
                 key="train_examinee_new",
-                placeholder="例: Pichi",
-                help="入力した名前は次回から選択肢に追加されます(管理者のみ)。"
+                placeholder=t("ui.settings.staff_placeholder"),
+                help=t("ui.staff.add_help")
             ).strip()
             staff = _staff_new
             if _staff_new:
@@ -2999,16 +2981,17 @@ def _training_submit_panel():
         selected_category = st.selectbox(
             t("ui.category.label"),
             CATEGORY_OPTIONS,
+            format_func=_category_display,
             key=_tk("category"),
-            help="カテゴリを選ぶと、上のブランドリストがそのカテゴリのブランドのみに絞り込まれます。「指定なし」で全ブランド表示。"
+            help=t("ui.category.help")
         )
 
         if sel_label is None:
             brand_ja = ""
             brand_en = ""
         elif sel_label == "(その他/未登録)":
-            brand_ja = st.text_input("ブランド名(日本語)", key=_tk("brand_custom_ja"))
-            brand_en = st.text_input("ブランド名(英語)", key=_tk("brand_custom_en"))
+            brand_ja = st.text_input(t("ui.brand.name_ja"), key=_tk("brand_custom_ja"))
+            brand_en = st.text_input(t("ui.brand.name_en"), key=_tk("brand_custom_en"))
         else:
             parts = sel_label.split("  /  ")
             brand_ja = parts[0]
@@ -3020,7 +3003,7 @@ def _training_submit_panel():
         with col_y:
             year = st.text_input(t("ui.year.label"), placeholder=t("ui.year.placeholder"), key=_tk("year"))
         with col_r:
-            rank = st.selectbox(t("ui.rank.label"), RANK_OPTIONS, key=_tk("rank"))
+            rank = st.selectbox(t("ui.rank.label"), RANK_OPTIONS, format_func=_rank_display, key=_tk("rank"))
 
         # 付属品は単独行(直下に「一部欠品」の詳細チェックリストを出すため)
         # ※ option の値("フルセット"等)は履歴保存・判定ロジックで使う固定キーなので翻訳しない。
@@ -3055,7 +3038,7 @@ def _training_submit_panel():
                             missing_items.append(item)
 
                 # 「もっと見る」展開
-                with st.expander("▼ もっと見る(細かい項目)"):
+                with st.expander(t("ui.more_fields")):
                     extra_items = ["内箱", "外箱", "化粧箱", "レシート・購入証明",
                                    "シリアルカード", "ショッピングバッグ(紙袋)",
                                    "予備コマ", "タグ"]
@@ -3088,7 +3071,7 @@ def _training_submit_panel():
             format_func=lambda v: t(_GC_LABEL.get(v, v)),
             horizontal=True,
             key=_tk("gc"),
-            help="時計・ジュエリー・一部バッグで査定額に影響します。該当しない商品は「対象外 / 不問」。"
+            help=t("ui.gc.help")
         )
         gc_status = {"有り": "has", "無し": "none", "対象外 / 不問": "na"}[gc_choice]
 
@@ -3098,21 +3081,19 @@ def _training_submit_panel():
             is_microchip = st.checkbox(
                 "マイクロチップ品(2021年以降)",
                 key=_tk("microchip"),
-                help="2021年以降のCHANEL等はシリアルがマイクロチップ化(ランダム番号)。"
-                     "外観からの年式判定不可。チェックすると年式判定ロジックをスキップします。"
+                help=t("ui.microchip.help")
             )
         with col_unknown:
             is_year_unknown = st.checkbox(
                 "年式不明",
                 key=_tk("year_unknown"),
-                help="製造年が判定できない場合にチェック。"
+                help=t("ui.year_unknown.help")
             )
         with col_random:
             is_random_serial = st.checkbox(
                 "ランダムシリアル品(ロレックス2010年以降)",
                 key=_tk("random_serial"),
-                help="ロレックスは2010年頃からシリアルがランダム化され、シリアルからの年式特定が不可。"
-                     "チェックすると年式判定ロジックをスキップします。"
+                help=t("ui.random_serial.help")
             )
 
         # 履歴・応答ロジック用に付属品情報を文字列化
@@ -3183,7 +3164,7 @@ def _training_submit_panel():
         if not staff_filled:
             btn_help = t("ui.training.need_examinee")
         elif not brand_filled:
-            btn_help = "ブランドを選択してください(必須)"
+            btn_help = t("ui.brand.need")
         else:
             btn_help = None
         ask_chosuke = st.button(
@@ -3231,7 +3212,7 @@ def _training_submit_panel():
 
         if st.session_state.t_advice_result is None:
             if ask_chosuke:
-                st.warning("ブランドと品名を入力してください。")
+                st.warning(t("ui.need_brand_product"))
             else:
                 st.info(t("ui.response.empty"))
         else:
@@ -3505,7 +3486,7 @@ def _training_my_results():
             st.caption(f"{ts} / {brand} / {product}")
 
             # --- 自分が当時どう査定したか(振り返り用・提出内容フル) ---
-            with st.expander("📋 自分の査定内容を見る", expanded=True):
+            with st.expander(t("ui.training.view_own"), expanded=True):
                 st.markdown(f"**ブランド**: {brand} / {row.get('brand_en','')}")
                 st.markdown(f"**品名**: {product}")
                 st.markdown(f"**製造年**: {row.get('year','') or '—'}")
@@ -3575,7 +3556,7 @@ def _show_shot_group(shot_id: str, title: str, key_prefix: str, point_label_over
     if not imgs:
         return
     st.markdown(f"##### {title}")
-    st.caption("ボタンを押すと、同じ画面内で拡大/縮小できます。")
+    st.caption(t("ui.shot.toggle_caption"))
     _exp_key = f"train_expanded::{shot_id}"
     _expanded = st.session_state.get(_exp_key)
     if _expanded is not None and 0 <= _expanded < len(imgs):
@@ -3610,7 +3591,7 @@ def training_review_mode():
 
     df = load_training()
     if df.empty:
-        st.info("まだトレーニングの提出がありません。")
+        st.info(t("ui.training.no_submit"))
         return
 
     if "review_status" not in df.columns:
@@ -3626,10 +3607,10 @@ def training_review_mode():
     st.markdown("---")
 
     if pending.empty:
-        st.success("🦉 未評価のトレーニング提出はありません。お疲れさまです!")
-        with st.expander("過去の評価履歴を確認する"):
+        st.success(t("ui.training_review.none_pending"))
+        with st.expander(t("ui.training_review.show_history")):
             if reviewed.empty:
-                st.caption("まだ評価履歴はありません。")
+                st.caption(t("ui.training_review.no_history"))
             else:
                 done = reviewed.sort_values("timestamp", ascending=False)
                 show_cols = [c for c in ["timestamp", "staff", "brand_ja", "product_name",
@@ -3640,8 +3621,8 @@ def training_review_mode():
 
     pending_sorted_all = pending.sort_values("timestamp", ascending=False).reset_index(drop=True)
     staff_list = sorted({str(s).strip() for s in pending_sorted_all["staff"].fillna("").tolist() if str(s).strip()})
-    sel_staff = st.selectbox("staff絞り込み", ["(全員)"] + staff_list, key="train_review_staff_filter")
-    if sel_staff == "(全員)":
+    sel_staff = st.selectbox(t("ui.filter.staff"), [t("ui.filter.all")] + staff_list, key="train_review_staff_filter")
+    if sel_staff == t("ui.filter.all"):
         pending_sorted = pending_sorted_all
     else:
         pending_sorted = pending_sorted_all[
@@ -3703,7 +3684,7 @@ def training_review_mode():
                          key_prefix=f"market_{target_idx}", point_label_overall=False)
 
     # --- 4軸評価フォーム ---
-    st.markdown("##### 🦉 裕平さんの評価(現物を見ながら)")
+    st.markdown(t("ui.training_review.expert_header"))
     _OK = t("ui.training_review.eval_ok")
     _NG = t("ui.training_review.eval_ng")
     with st.form(f"train_review_form_{target_idx}"):
@@ -3722,12 +3703,12 @@ def training_review_mode():
             expert_min = st.number_input(
                 t("ui.training_review.expert_price_min"), min_value=0, step=1, format="%d",
                 key=f"tr_emin_{target_idx}",
-                help="あなたが考える正解の買取金額の下限。")
+                help=t("ui.training_review.min_help"))
         with _ep2:
             expert_max = st.number_input(
                 t("ui.training_review.expert_price_max"), min_value=0, step=1, format="%d",
                 key=f"tr_emax_{target_idx}",
-                help="あなたが考える正解の買取金額の上限。staff の額がこのレンジ内かで判断。")
+                help=t("ui.training_review.max_help"))
 
         st.markdown("**" + t("ui.training_review.mark") + "**")
         _MARKS = {
@@ -3770,31 +3751,31 @@ def training_review_mode():
             df.at[target_idx, "review_status"] = "reviewed"
             df.at[target_idx, "reviewed_at"] = datetime.now().isoformat(timespec="seconds")
             be.write_sheet("training_history", df)
-            st.success("評価を保存しました。")
+            st.success(t("ui.training_review.saved"))
             st.rerun()
 
         if skip_btn:
             df.at[target_idx, "review_status"] = "skipped"
             df.at[target_idx, "reviewed_at"] = datetime.now().isoformat(timespec="seconds")
             be.write_sheet("training_history", df)
-            st.info("スキップしました。")
+            st.info(t("ui.training_review.skipped"))
             st.rerun()
 
 
 def settings_mode():
-    st.markdown("## ⚙️ 設定")
+    st.markdown("## ⚙️ " + t("ui.mode.settings"))
 
-    st.markdown("### データ保存先(クラウド)")
-    st.caption("ChosukeのデータはGoogleスプレッドシートとGoogle Driveに保存されています。")
+    st.markdown(t("ui.settings.storage_header"))
+    st.caption(t("ui.settings.storage_caption"))
 
     try:
         _sid = st.secrets.get("spreadsheet_id", "(未設定)")
     except Exception:
         _sid = "(secrets 未設定)"
     st.markdown(f"**スプレッドシートID**: `{_sid}`")
-    st.caption("スクショ画像もスプレッドシート内(screenshotsタブ)に保存されます。")
+    st.caption(t("ui.settings.screenshot_caption"))
 
-    st.markdown("**各タブの行数**:")
+    st.markdown(t("ui.settings.rowcounts"))
     try:
         for _name in ["brands", "checklists", "feedback",
                       "appraisal_history", "keyword_requirements", "staff_master",
@@ -3806,22 +3787,22 @@ def settings_mode():
 
     # staff マスタ管理(管理者のみ)
     st.markdown("---")
-    st.markdown("### staff名簿の管理")
-    st.caption("査定モードのstaff選択肢になります。表記ゆれ防止のため、追加はここからのみ行います。")
+    st.markdown(t("ui.settings.staff_header"))
+    st.caption(t("ui.settings.staff_caption"))
     _roster = load_staff_master()
     st.text("現在の名簿: " + ", ".join(_roster))
-    _new_staff = st.text_input("新しいstaff名を追加", placeholder="例: Pichi", key="settings_new_staff")
-    if st.button("名簿に追加"):
+    _new_staff = st.text_input(t("ui.settings.staff_add_label"), placeholder=t("ui.settings.staff_placeholder"), key="settings_new_staff")
+    if st.button(t("ui.settings.staff_add_btn")):
         _ns = (_new_staff or "").strip()
         if _ns:
             add_staff_to_master(_ns)
             st.success(f"追加しました: {_ns}")
             st.rerun()
         else:
-            st.warning("名前を入力してください。")
+            st.warning(t("ui.settings.need_name"))
 
     st.markdown("---")
-    st.markdown("### Claude API連携(将来用)")
+    st.markdown(t("ui.settings.api_header"))
     st.info(
         "現在はAPIなし(ナレッジベース版)で動作しています。\n\n"
         "Claude APIを接続すると、スクショから自動で相場を推測したり、"
@@ -3923,7 +3904,7 @@ def main():
         mode_keys = ["🔍 査定モード", "🎓 トレーニングモード"]
 
     with st.sidebar:
-        st.markdown("### モード選択")
+        st.markdown(t("ui.sidebar.mode_select"))
         _MODE_LABEL = {
             "🔍 査定モード": "ui.mode.appraisal",
             "📝 査定レビューモード": "ui.mode.review",
