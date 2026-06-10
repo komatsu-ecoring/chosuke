@@ -258,6 +258,8 @@ MESSAGES = {
         "ui.login.status_admin": "管理者 / Admin",
         "ui.sidebar.logged_in": "ログイン中: {role}",
         "ui.sidebar.partial_translation": "ℹ️ Some detailed messages may appear in Japanese until fully translated.",
+        "ui.checklist.baseline_item": "相場根拠は充分か?",
+        "ui.checklist.baseline_hint": "同型・同年式・同コンディションの取引実績を最低3件は確認したか? 1件だけで判断していないか?",
     },
     "en": {
         # --- UIラベル ---
@@ -503,6 +505,8 @@ MESSAGES = {
         "ui.login.status_admin": "Admin",
         "ui.sidebar.logged_in": "Logged in: {role}",
         "ui.sidebar.partial_translation": "ℹ️ Some detailed messages may appear in Japanese until fully translated.",
+        "ui.checklist.baseline_item": "Is the market basis sufficient?",
+        "ui.checklist.baseline_hint": "Have you checked at least 3 transaction records of the same model, year, and condition? Aren't you judging from just one?",
     },
     "km": {
         # --- UIラベル ---
@@ -748,5 +752,7 @@ MESSAGES = {
         "ui.login.status_admin": "អ្នកគ្រប់គ្រង (Admin)",
         "ui.sidebar.logged_in": "កំពុងចូលប្រើ: {role}",
         "ui.sidebar.partial_translation": "ℹ️ សារលម្អិតមួយចំនួនអាចបង្ហាញជាភាសាជប៉ុន រហូតដល់បកប្រែពេញលេញ។",
+        "ui.checklist.baseline_item": "តើមូលដ្ឋានទីផ្សារគ្រប់គ្រាន់ឬទេ?",
+        "ui.checklist.baseline_hint": "តើអ្នកបានពិនិត្យកំណត់ត្រាប្រតិបត្តិការយ៉ាងតិច ៣ សម្រាប់ម៉ូដែល ឆ្នាំ និងស្ថានភាពដូចគ្នាឬទេ? តើអ្នកវិនិច្ឆ័យពីតែ ១ ឬ?",
     },
 }

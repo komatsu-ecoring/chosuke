@@ -2450,13 +2450,10 @@ def appraisal_mode():
             st.markdown("#### " + t("ui.card.checklist"))
             with st.container(border=True):
                 st.checkbox(
-                    "**相場根拠は充分か?**",
+                    f"**{t('ui.checklist.baseline_item')}**",
                     key=f"chk_baseline_{meta.get('brand_ja','')}_{meta.get('product_name','')}"
                 )
-                st.caption(
-                    "同型・同年式・同コンディションの取引実績を最低3件は確認したか? "
-                    "1件だけで判断していないか?"
-                )
+                st.caption(t("ui.checklist.baseline_hint"))
 
             # ブランド固有のチェックリスト
             if not advice["checklists"].empty:
@@ -3340,13 +3337,10 @@ def _training_submit_panel():
             st.markdown("#### " + t("ui.card.checklist"))
             with st.container(border=True):
                 st.checkbox(
-                    "**相場根拠は充分か?**",
+                    f"**{t('ui.checklist.baseline_item')}**",
                     key=f"chk_baseline_{meta.get('brand_ja','')}_{meta.get('product_name','')}"
                 )
-                st.caption(
-                    "同型・同年式・同コンディションの取引実績を最低3件は確認したか? "
-                    "1件だけで判断していないか?"
-                )
+                st.caption(t("ui.checklist.baseline_hint"))
 
             # ブランド固有のチェックリスト
             if not advice["checklists"].empty:

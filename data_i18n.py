@@ -167,6 +167,10 @@ DATA_TRANSLATIONS = {
     "需要は限定的。": {"en": "Demand is limited.", "km": "តម្រូវការមានកម្រិត។"},
     "高級時計。書類・付属品の有無が査定に大きく影響。": {"en": "Luxury watch. Presence of papers/accessories greatly affects valuation.", "km": "នាឡិកាប្រណីត។ មាន/គ្មានឯកសារ/គ្រឿងបន្លាស់ ប៉ះពាល់ការវាយតម្លៃច្រើន។"},
     "高級時計の頂点。書類・付属品マスト。": {"en": "The pinnacle of luxury watches. Papers/accessories are a must.", "km": "កំពូលនៃនាឡិកាប្រណីត។ ឯកសារ/គ្រឿងបន្លាស់ចាំបាច់។"},
+    # ========== スプレッドシート固有 / 追加分 ==========
+    "最新相場を要チェック。": {"en": "Check the latest market price.", "km": "ត្រូវពិនិត្យតម្លៃទីផ្សារថ្មីបំផុត។"},
+    "状態勝負。": {"en": "Condition is key.", "km": "ស្ថានភាពសំខាន់។"},
+    "書類確認必須。": {"en": "Document check is a must.", "km": "ត្រូវពិនិត្យឯកសារ។"},
 }
 def td(text, lang="ja"):
     if lang == "ja" or not text:
