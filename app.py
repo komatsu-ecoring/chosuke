@@ -763,22 +763,22 @@ def market_range_check(price_min: float, price_max: float) -> dict:
     if ratio <= 1.15:
         return {
             "level": "narrow", "ratio": ratio,
-            "message": f"相場感は固まってるな(幅 {ratio:.2f}倍)。よし、細部チェックに進むぞ!"
+            "message": t("dyn.range.narrow", ratio=f"{ratio:.2f}")
         }
     elif ratio <= 1.4:
         return {
             "level": "normal", "ratio": ratio,
-            "message": f"許容範囲の幅だな({ratio:.2f}倍)。上下どっちに寄せるかは細部次第だぞ、よーく見るんだ!"
+            "message": t("dyn.range.normal", ratio=f"{ratio:.2f}")
         }
     elif ratio <= 2.0:
         return {
             "level": "wide", "ratio": ratio,
-            "message": f"⚠ 幅が広めだぞ({ratio:.2f}倍)。状態(rank)・年式・付属品で価格差が出る前提なのかぁ?参照データの整合性、もう一度確かめろよ!"
+            "message": t("dyn.range.wide", ratio=f"{ratio:.2f}")
         }
     else:
         return {
             "level": "very_wide", "ratio": ratio,
-            "message": f"⚠⚠ おい、相場の見方に問題があるかもしれんぞ(幅 {ratio:.2f}倍)。同じ商品・同じrank・同じ素材の相場として見てるかぁ?日本相場と東南アジア実売が混ざってないか、確かめるんだ!"
+            "message": t("dyn.range.very_wide", ratio=f"{ratio:.2f}")
         }
 
 
@@ -2347,7 +2347,7 @@ def appraisal_mode():
                 if level != "unknown":
                     st.markdown(f"""
                     <div class="range-card-{level}">
-                        <strong>相場の幅判定</strong><br>
+                        <strong>{t("ui.card.range_header")}</strong><br>
                         {ri["message"]}
                     </div>
                     """, unsafe_allow_html=True)
@@ -2429,11 +2429,11 @@ def appraisal_mode():
             # 注意点(統合表示)
             notes_items = []
             if advice["brand_notes"]:
-                notes_items.append({"src": "初期登録", "content": advice["brand_notes"]})
+                notes_items.append({"src": t("ui.card.notes_src_initial"), "content": advice["brand_notes"]})
             if not advice["past_feedback"].empty:
                 for _, row in advice["past_feedback"].iterrows():
                     notes_items.append({
-                        "src": f"フィードバック({row.get('feedback_type','')})",
+                        "src": t("ui.card.notes_src_feedback", type=row.get('feedback_type','')),
                         "content": row["content"]
                     })
 
@@ -2468,19 +2468,24 @@ def appraisal_mode():
             # フィードバック欄
             st.markdown("---")
             st.markdown("#### " + t("ui.card.feedback"))
-            st.caption(
-                "足りなかった確認事項、ズレてた相場感などがあれば教えてください。"
-                "送信したフィードバックは、ナレッジ管理モードで内容を確認のうえ「正式化」することで、"
-                "次回以降のChosukeの応答に反映されます。"
-            )
+            st.caption(t("ui.feedback.caption"))
 
             with st.form("feedback_form"):
+                # selectbox の値(日本語)は feedback_type として保存・照合されるので温存し、
+                # 表示だけ format_func で言語切替する。
+                _FB_TYPE_LABEL = {
+                    "不足してた確認事項": "ui.feedback.type.missing",
+                    "相場感のズレ": "ui.feedback.type.market",
+                    "ノウハウ追加": "ui.feedback.type.knowhow",
+                    "その他": "ui.feedback.type.other",
+                }
                 fb_type = st.selectbox(
-                    "フィードバック種別",
-                    ["不足してた確認事項", "相場感のズレ", "ノウハウ追加", "その他"]
+                    t("ui.feedback.type_label"),
+                    ["不足してた確認事項", "相場感のズレ", "ノウハウ追加", "その他"],
+                    format_func=lambda v: t(_FB_TYPE_LABEL.get(v, v))
                 )
-                fb_content = st.text_area("内容", placeholder="例: このブランドのこの年代は素材が変わったから注意した方がいい")
-                fb_submit = st.form_submit_button("📤 Chosukeに教える")
+                fb_content = st.text_area(t("ui.feedback.content_label"), placeholder=t("ui.feedback.content_placeholder"))
+                fb_submit = st.form_submit_button(t("ui.feedback.submit"))
 
                 if fb_submit and fb_content:
                     append_feedback({
@@ -3232,7 +3237,7 @@ def _training_submit_panel():
                 if level != "unknown":
                     st.markdown(f"""
                     <div class="range-card-{level}">
-                        <strong>相場の幅判定</strong><br>
+                        <strong>{t("ui.card.range_header")}</strong><br>
                         {ri["message"]}
                     </div>
                     """, unsafe_allow_html=True)
@@ -3314,11 +3319,11 @@ def _training_submit_panel():
             # 注意点(統合表示)
             notes_items = []
             if advice["brand_notes"]:
-                notes_items.append({"src": "初期登録", "content": advice["brand_notes"]})
+                notes_items.append({"src": t("ui.card.notes_src_initial"), "content": advice["brand_notes"]})
             if not advice["past_feedback"].empty:
                 for _, row in advice["past_feedback"].iterrows():
                     notes_items.append({
-                        "src": f"フィードバック({row.get('feedback_type','')})",
+                        "src": t("ui.card.notes_src_feedback", type=row.get('feedback_type','')),
                         "content": row["content"]
                     })
 
@@ -3985,10 +3990,10 @@ def main():
     else:
         settings_mode()
 
-    st.markdown("""
+    st.markdown(f"""
     <div class="chosuke-footer">
         Chosuke v0.13.0 🦉 · Eco Ring Cambodia AI Appraisal Assistant<br>
-        staffの思考を整える助手 — 答えを出さず、観察を促す
+        {t("ui.footer.tagline")}
     </div>
     """, unsafe_allow_html=True)
 
