@@ -318,6 +318,7 @@ if "lang" not in st.session_state:
 # キー体系: ui.* (UIラベル) / msg.* (固定セリフ) / dyn.* (動的セリフ・.formatで変数差し込み)
 # HTMLタグ(<b>等)は辞書には含めず、呼び出し側で付与する。
 from messages import MESSAGES
+from data_i18n import td
 
 # v0.10以前は year_recent 等のプレフィックス無しキーを使用していた。
 # 現行辞書は msg.year_recent 等に統一済み。後方互換のため別名を吸収する。
@@ -2154,7 +2155,7 @@ def appraisal_mode():
 
                     other_text = st.text_input(
                         "その他(自由記述)",
-                        placeholder="例: パドロックの鍵が片方なし",
+                        placeholder=t("ui.acc.other_placeholder"),
                         key=_k("acc_other")
                     )
                     if other_text.strip():
@@ -2183,19 +2184,19 @@ def appraisal_mode():
         col_chip, col_unknown, col_random = st.columns(3)
         with col_chip:
             is_microchip = st.checkbox(
-                "マイクロチップ品(2021年以降)",
+                t("ui.flag.microchip"),
                 key=_k("microchip"),
                 help=t("ui.microchip.help")
             )
         with col_unknown:
             is_year_unknown = st.checkbox(
-                "年式不明",
+                t("ui.flag.year_unknown"),
                 key=_k("year_unknown"),
                 help=t("ui.year_unknown.help")
             )
         with col_random:
             is_random_serial = st.checkbox(
-                "ランダムシリアル品(ロレックス2010年以降)",
+                t("ui.flag.random_serial"),
                 key=_k("random_serial"),
                 help=t("ui.random_serial.help")
             )
@@ -2218,7 +2219,7 @@ def appraisal_mode():
             }
             stamp_or_serial = st.text_input(
                 label_map[brand_en],
-                placeholder="入力するとChosukeが年式推定します",
+                placeholder=t("ui.serial.placeholder"),
                 key=_k("stamp")
             )
 
@@ -2355,16 +2356,16 @@ def appraisal_mode():
             if advice["cost_min"] is not None:
                 _src = advice.get("cost_source")
                 if _src == "実績":
-                    source_label = f"実績ベース(過去 {advice.get('cost_actual_count', 0)} 件)"
+                    source_label = t("dyn.card.cost_src_actual", n=advice.get('cost_actual_count', 0))
                 elif _src == "動的算出":
-                    source_label = "動的算出(ブランド×Rank×年式×ギャラ×付属品)"
+                    source_label = t("ui.card.cost_src_dynamic")
                 else:
-                    source_label = "初期値(レビュー実績で精度UP)"
+                    source_label = t("ui.card.cost_src_initial")
                 st.markdown(f"""
                 <div class="cost-ratio-card">
-                    <div class="cost-ratio-label">推奨原価率 — {source_label}</div>
+                    <div class="cost-ratio-label">{t("ui.card.cost_label", src=source_label)}</div>
                     <div class="cost-ratio-value">{advice["cost_min"]}% 〜 {advice["cost_max"]}%</div>
-                    <div class="cost-ratio-note">最終判断は鑑定士。あくまで参考値です。</div>
+                    <div class="cost-ratio-note">{t("ui.card.cost_note")}</div>
                     <div class="cost-ratio-cheer">🦉 {t("msg.negotiation_prompt")}</div>
                 </div>
                 """, unsafe_allow_html=True)
@@ -2374,7 +2375,7 @@ def appraisal_mode():
                 if advice.get("cost_thinking"):
                     st.markdown(f"""
                     <div class="thinking-card">
-                        <div class="thinking-label">💭 Chosukeの考え(原価率の組み立て)</div>
+                        <div class="thinking-label">{t("ui.card.thinking_label")}</div>
                         <div class="thinking-text">{advice["cost_thinking"]}</div>
                     </div>
                     """, unsafe_allow_html=True)
@@ -2383,10 +2384,10 @@ def appraisal_mode():
             # 設計インサイト #004: 鑑定士の手を止めさせ、具体動作(ルーペ/ライト等)を促す。
             # 原価率の算出方法(実績/動的/初期値)に関わらず、カテゴリが分かれば必ず出す。
             if advice.get("inspection_tip"):
-                _ins_cat = advice.get("inspect_cat") or "この商品"
+                _ins_cat = advice.get("inspect_cat") or t("ui.card.inspect_default_cat")
                 st.markdown(f"""
                 <div class="inspection-card">
-                    <div class="inspection-label">🔍 手を動かして確認するんだぞ({_ins_cat})</div>
+                    <div class="inspection-label">{t("dyn.card.inspection_label", cat=_ins_cat)}</div>
                     <div class="inspection-text">{advice["inspection_tip"]}</div>
                 </div>
                 """, unsafe_allow_html=True)
@@ -2404,7 +2405,7 @@ def appraisal_mode():
             if advice.get("year_advice"):
                 st.markdown(f"""
                 <div class="year-card">
-                    <strong>📅 年式判定</strong><br>
+                    <strong>{t("ui.card.year_label")}</strong><br>
                     {advice["year_advice"]}
                 </div>
                 """, unsafe_allow_html=True)
@@ -2421,7 +2422,7 @@ def appraisal_mode():
             if advice.get("history_msg"):
                 st.markdown(f"""
                 <div class="history-card">
-                    <strong>📊 過去の同商品との比較</strong><br>
+                    <strong>{t("ui.card.history_label")}</strong><br>
                     {advice["history_msg"]}
                 </div>
                 """, unsafe_allow_html=True)
@@ -2429,7 +2430,7 @@ def appraisal_mode():
             # 注意点(統合表示)
             notes_items = []
             if advice["brand_notes"]:
-                notes_items.append({"src": t("ui.card.notes_src_initial"), "content": advice["brand_notes"]})
+                notes_items.append({"src": t("ui.card.notes_src_initial"), "content": td(advice["brand_notes"], st.session_state.lang)})
             if not advice["past_feedback"].empty:
                 for _, row in advice["past_feedback"].iterrows():
                     notes_items.append({
@@ -2462,8 +2463,8 @@ def appraisal_mode():
                 for idx, row in advice["checklists"].iterrows():
                     chk_key = f"chk_{meta.get('brand_ja','')}_{idx}_{row['check_item']}"
                     with st.container(border=True):
-                        st.checkbox(f"**{row['check_item']}**", key=chk_key)
-                        st.caption(row["hint"])
+                        st.checkbox(f"**{td(row['check_item'], st.session_state.lang)}**", key=chk_key)
+                        st.caption(td(row["hint"], st.session_state.lang))
 
             # フィードバック欄
             st.markdown("---")
@@ -2756,7 +2757,7 @@ def review_mode():
                     # 拡大表示モード: 選択中の1枚を原寸で表示
                     if 0 <= _expanded < len(imgs):
                         st.image(imgs[_expanded], use_container_width=True)
-                    if st.button("🔽 縮小 / Shrink", key=f"shrink_{shot_id}"):
+                    if st.button(t("ui.shot.shrink"), key=f"shrink_{shot_id}"):
                         st.session_state[_exp_key] = None
                         st.rerun()
                 else:
@@ -2816,7 +2817,7 @@ def review_mode():
         with col_btn1:
             save_btn = st.form_submit_button("💾 保存して次へ", type="primary", use_container_width=True)
         with col_btn2:
-            skip_btn = st.form_submit_button("⏭ スキップ", use_container_width=True)
+            skip_btn = st.form_submit_button(t("ui.training.skip"), use_container_width=True)
 
         if save_btn:
             df.at[target_idx, "actual_cost_rate"] = actual_rate
@@ -3055,7 +3056,7 @@ def _training_submit_panel():
 
                     other_text = st.text_input(
                         "その他(自由記述)",
-                        placeholder="例: パドロックの鍵が片方なし",
+                        placeholder=t("ui.acc.other_placeholder"),
                         key=_tk("acc_other")
                     )
                     if other_text.strip():
@@ -3084,19 +3085,19 @@ def _training_submit_panel():
         col_chip, col_unknown, col_random = st.columns(3)
         with col_chip:
             is_microchip = st.checkbox(
-                "マイクロチップ品(2021年以降)",
+                t("ui.flag.microchip"),
                 key=_tk("microchip"),
                 help=t("ui.microchip.help")
             )
         with col_unknown:
             is_year_unknown = st.checkbox(
-                "年式不明",
+                t("ui.flag.year_unknown"),
                 key=_tk("year_unknown"),
                 help=t("ui.year_unknown.help")
             )
         with col_random:
             is_random_serial = st.checkbox(
-                "ランダムシリアル品(ロレックス2010年以降)",
+                t("ui.flag.random_serial"),
                 key=_tk("random_serial"),
                 help=t("ui.random_serial.help")
             )
@@ -3119,7 +3120,7 @@ def _training_submit_panel():
             }
             stamp_or_serial = st.text_input(
                 label_map[brand_en],
-                placeholder="入力するとChosukeが年式推定します",
+                placeholder=t("ui.serial.placeholder"),
                 key=_tk("stamp")
             )
 
@@ -3245,16 +3246,16 @@ def _training_submit_panel():
             if advice["cost_min"] is not None:
                 _src = advice.get("cost_source")
                 if _src == "実績":
-                    source_label = f"実績ベース(過去 {advice.get('cost_actual_count', 0)} 件)"
+                    source_label = t("dyn.card.cost_src_actual", n=advice.get('cost_actual_count', 0))
                 elif _src == "動的算出":
-                    source_label = "動的算出(ブランド×Rank×年式×ギャラ×付属品)"
+                    source_label = t("ui.card.cost_src_dynamic")
                 else:
-                    source_label = "初期値(レビュー実績で精度UP)"
+                    source_label = t("ui.card.cost_src_initial")
                 st.markdown(f"""
                 <div class="cost-ratio-card">
-                    <div class="cost-ratio-label">推奨原価率 — {source_label}</div>
+                    <div class="cost-ratio-label">{t("ui.card.cost_label", src=source_label)}</div>
                     <div class="cost-ratio-value">{advice["cost_min"]}% 〜 {advice["cost_max"]}%</div>
-                    <div class="cost-ratio-note">最終判断は鑑定士。あくまで参考値です。</div>
+                    <div class="cost-ratio-note">{t("ui.card.cost_note")}</div>
                     <div class="cost-ratio-cheer">🦉 {t("msg.negotiation_prompt")}</div>
                 </div>
                 """, unsafe_allow_html=True)
@@ -3264,7 +3265,7 @@ def _training_submit_panel():
                 if advice.get("cost_thinking"):
                     st.markdown(f"""
                     <div class="thinking-card">
-                        <div class="thinking-label">💭 Chosukeの考え(原価率の組み立て)</div>
+                        <div class="thinking-label">{t("ui.card.thinking_label")}</div>
                         <div class="thinking-text">{advice["cost_thinking"]}</div>
                     </div>
                     """, unsafe_allow_html=True)
@@ -3273,10 +3274,10 @@ def _training_submit_panel():
             # 設計インサイト #004: 鑑定士の手を止めさせ、具体動作(ルーペ/ライト等)を促す。
             # 原価率の算出方法(実績/動的/初期値)に関わらず、カテゴリが分かれば必ず出す。
             if advice.get("inspection_tip"):
-                _ins_cat = advice.get("inspect_cat") or "この商品"
+                _ins_cat = advice.get("inspect_cat") or t("ui.card.inspect_default_cat")
                 st.markdown(f"""
                 <div class="inspection-card">
-                    <div class="inspection-label">🔍 手を動かして確認するんだぞ({_ins_cat})</div>
+                    <div class="inspection-label">{t("dyn.card.inspection_label", cat=_ins_cat)}</div>
                     <div class="inspection-text">{advice["inspection_tip"]}</div>
                 </div>
                 """, unsafe_allow_html=True)
@@ -3294,7 +3295,7 @@ def _training_submit_panel():
             if advice.get("year_advice"):
                 st.markdown(f"""
                 <div class="year-card">
-                    <strong>📅 年式判定</strong><br>
+                    <strong>{t("ui.card.year_label")}</strong><br>
                     {advice["year_advice"]}
                 </div>
                 """, unsafe_allow_html=True)
@@ -3311,7 +3312,7 @@ def _training_submit_panel():
             if advice.get("history_msg"):
                 st.markdown(f"""
                 <div class="history-card">
-                    <strong>📊 過去の同商品との比較</strong><br>
+                    <strong>{t("ui.card.history_label")}</strong><br>
                     {advice["history_msg"]}
                 </div>
                 """, unsafe_allow_html=True)
@@ -3319,7 +3320,7 @@ def _training_submit_panel():
             # 注意点(統合表示)
             notes_items = []
             if advice["brand_notes"]:
-                notes_items.append({"src": t("ui.card.notes_src_initial"), "content": advice["brand_notes"]})
+                notes_items.append({"src": t("ui.card.notes_src_initial"), "content": td(advice["brand_notes"], st.session_state.lang)})
             if not advice["past_feedback"].empty:
                 for _, row in advice["past_feedback"].iterrows():
                     notes_items.append({
@@ -3352,8 +3353,8 @@ def _training_submit_panel():
                 for idx, row in advice["checklists"].iterrows():
                     chk_key = f"chk_{meta.get('brand_ja','')}_{idx}_{row['check_item']}"
                     with st.container(border=True):
-                        st.checkbox(f"**{row['check_item']}**", key=chk_key)
-                        st.caption(row["hint"])
+                        st.checkbox(f"**{td(row['check_item'], st.session_state.lang)}**", key=chk_key)
+                        st.caption(td(row["hint"], st.session_state.lang))
 
             # ===== 応答を見た後: 商品画像 + 自分の買取金額 + 提出 =====
             st.markdown("---")
@@ -3569,7 +3570,7 @@ def _show_shot_group(shot_id: str, title: str, key_prefix: str, point_label_over
         if point_label_overall:
             cap = "全体画像" if _expanded == 0 else f"査定ポイント {_expanded}"
             st.caption(f"📍 {cap}")
-        if st.button("🔽 縮小 / Shrink", key=f"{key_prefix}_shrink"):
+        if st.button(t("ui.shot.shrink"), key=f"{key_prefix}_shrink"):
             st.session_state[_exp_key] = None
             st.rerun()
     else:
@@ -3726,13 +3727,13 @@ def training_review_mode():
 
         eval_comment = st.text_area(
             t("ui.training_review.comment"), height=100,
-            placeholder="例: 角スレの見落としに注意。相場画像は良い。金額はもう少し攻めてOK。")
+            placeholder=t("ui.training.comment_placeholder"))
 
         col_b1, col_b2 = st.columns(2)
         with col_b1:
             save_btn = st.form_submit_button(t("ui.training_review.save"), type="primary", use_container_width=True)
         with col_b2:
-            skip_btn = st.form_submit_button("⏭ スキップ", use_container_width=True)
+            skip_btn = st.form_submit_button(t("ui.training.skip"), use_container_width=True)
 
         if save_btn:
             # ズレ計算: staff額がレンジ[min,max]内なら0、外れていれば最寄り境界からの差
@@ -3842,27 +3843,27 @@ def login_gate() -> bool:
     # 区分選択(まだ選んでいなければ2ボタンを出す)
     chosen = st.session_state.get("login_role_choice")
     if not chosen:
-        st.markdown("#### ログイン / Login")
-        st.caption("区分を選んでください / Please select")
+        st.markdown(t("ui.login.header"))
+        st.caption(t("ui.login.select"))
         c1, c2 = st.columns(2)
         with c1:
-            if st.button("👤 スタッフ\n\nStaff", use_container_width=True):
+            if st.button(t("ui.login.staff"), use_container_width=True):
                 st.session_state["login_role_choice"] = "staff"
                 st.rerun()
         with c2:
-            if st.button("🔑 管理者\n\nAdmin", use_container_width=True):
+            if st.button(t("ui.login.admin"), use_container_width=True):
                 st.session_state["login_role_choice"] = "admin"
                 st.rerun()
         return False
 
     # パスワード入力
     role = chosen
-    role_label = "スタッフ / Staff" if role == "staff" else "管理者 / Admin"
-    st.markdown(f"#### {role_label} ログイン")
-    pw = st.text_input("パスワード / Password", type="password", key="login_pw")
+    role_label = t("ui.login.status_staff") if role == "staff" else t("ui.login.status_admin")
+    st.markdown(f"#### {role_label} " + t("ui.login.button"))
+    pw = st.text_input(t("ui.login.password"), type="password", key="login_pw")
     c1, c2 = st.columns([1, 1])
     with c1:
-        if st.button("ログイン / Login", type="primary", use_container_width=True):
+        if st.button(t("ui.login.button"), type="primary", use_container_width=True):
             if _check_password(role, pw):
                 st.session_state["authed"] = True
                 st.session_state["role"] = role
@@ -3870,9 +3871,9 @@ def login_gate() -> bool:
                 st.session_state.pop("login_pw", None)
                 st.rerun()
             else:
-                st.error("パスワードが違います / Incorrect password")
+                st.error(t("ui.login.incorrect"))
     with c2:
-        if st.button("← 戻る / Back", use_container_width=True):
+        if st.button(t("ui.login.back"), use_container_width=True):
             st.session_state.pop("login_role_choice", None)
             st.rerun()
     return False
@@ -3959,12 +3960,12 @@ def main():
             st.session_state.lang = chosen_lang
             st.rerun()
         if st.session_state.lang in ("en", "km"):
-            st.caption("ℹ️ Some detailed messages may appear in Japanese until fully translated.")
+            st.caption(t("ui.sidebar.partial_translation"))
 
         st.markdown("---")
-        _role_disp = "管理者 / Admin" if is_admin else "スタッフ / Staff"
-        st.caption(f"ログイン中: {_role_disp}")
-        if st.button("ログアウト / Logout", use_container_width=True):
+        _role_disp = t("ui.login.status_admin") if is_admin else t("ui.login.status_staff")
+        st.caption(t("ui.sidebar.logged_in", role=_role_disp))
+        if st.button(t("ui.logout"), use_container_width=True):
             for k in ["authed", "role", "login_role_choice"]:
                 st.session_state.pop(k, None)
             st.rerun()
