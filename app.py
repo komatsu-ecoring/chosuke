@@ -3138,28 +3138,7 @@ def _training_submit_panel():
             key=_tk("screenshots")
         )
 
-        # ===== トレーニング追加入力: 商品画像(全体1枚 + 査定ポイント最大5枚) =====
-        st.markdown("### 🖼️ " + t("ui.training.img.header"))
-        st.markdown("**" + t("ui.training.img.overall") + "**")
-        st.caption(t("ui.training.img.overall_caption"))
-        overall_file = st.file_uploader(
-            t("ui.training.img.overall"),
-            type=["png", "jpg", "jpeg"],
-            accept_multiple_files=False,
-            key=_tk("img_overall"),
-        )
-        st.markdown("**" + t("ui.training.img.points") + "**")
-        st.caption(t("ui.training.img.points_caption"))
-        point_files = st.file_uploader(
-            t("ui.training.img.points"),
-            type=["png", "jpg", "jpeg"],
-            accept_multiple_files=True,
-            key=_tk("img_points"),
-        )
-        if point_files and len(point_files) > 5:
-            st.warning("査定ポイント画像は最大5枚です。先頭5枚のみ使用します。")
-            point_files = point_files[:5]
-
+        # 画像入力(全体・査定ポイント)は相談後に表示するため、ここでは描画しない
         # 「Chosukeに相談する」: 商品情報が揃えば押せる(画像・金額は提出時に必須)
         staff_filled = bool(staff.strip())
         brand_filled = bool(brand_ja and brand_ja.strip())
