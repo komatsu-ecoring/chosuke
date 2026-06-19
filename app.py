@@ -3130,13 +3130,21 @@ def _training_submit_panel():
             price_max = st.number_input(t("ui.market.max"), min_value=0, step=1, format="%d", key=_tk("pmax"))
 
         st.markdown("### " + t("ui.screenshot.header"))
+        st.info("💻 **相場を調べた“画面”のスクショ** をここに入れてください(ネット・他店の売値など)。"
+                "現物の写真ではありません。/ Screenshots of **market price screens** (not the actual item).")
         st.caption(t("ui.screenshot.caption"))
         uploaded_files = st.file_uploader(
-            "スクショをドラッグ&ドロップ",
+            "💻 相場スクショをドラッグ&ドロップ / Market screenshots",
             type=["png", "jpg", "jpeg"],
             accept_multiple_files=True,
             key=_tk("screenshots")
         )
+        if uploaded_files:
+            st.caption(f"📊 相場参考スクショ {len(uploaded_files)}枚 をアップしました")
+            _prev_cols = st.columns(min(len(uploaded_files), 4))
+            for _i, _f in enumerate(uploaded_files):
+                with _prev_cols[_i % len(_prev_cols)]:
+                    st.image(_f, width=110, caption=f"📊 相場{_i+1}")
 
         # 画像入力(全体・査定ポイント)は相談後に表示するため、ここでは描画しない
         # 「Chosukeに相談する」: 商品情報が揃えば押せる(画像・金額は提出時に必須)
@@ -3332,19 +3340,31 @@ def _training_submit_panel():
             # ===== 応答を見た後: 商品画像 + 自分の買取金額 + 提出 =====
             st.markdown("---")
             st.markdown("### 🖼️ " + t("ui.training.img.header"))
+            st.info("📷 **査定している“現物”の写真** をここに入れてください。"
+                    "相場スクショ(画面)ではありません。/ Photos of the **actual item** you are appraising (not market screenshots).")
             st.markdown("**" + t("ui.training.img.overall") + "**")
             st.caption(t("ui.training.img.overall_caption"))
             overall_file = st.file_uploader(
-                t("ui.training.img.overall"), type=["png", "jpg", "jpeg"],
+                "📷 " + t("ui.training.img.overall"), type=["png", "jpg", "jpeg"],
                 accept_multiple_files=False, key=_tk("img_overall"))
+            if overall_file is not None:
+                _oc = st.columns([1, 3])
+                with _oc[0]:
+                    st.image(overall_file, width=110, caption="📷 全体")
             st.markdown("**" + t("ui.training.img.points") + "**")
             st.caption(t("ui.training.img.points_caption"))
             point_files = st.file_uploader(
-                t("ui.training.img.points"), type=["png", "jpg", "jpeg"],
+                "📷 " + t("ui.training.img.points"), type=["png", "jpg", "jpeg"],
                 accept_multiple_files=True, key=_tk("img_points"))
             if point_files and len(point_files) > 5:
                 st.warning("査定ポイント画像は最大5枚です。先頭5枚のみ使用します。")
                 point_files = point_files[:5]
+            if point_files:
+                st.caption(f"📷 査定ポイント {len(point_files)}枚")
+                _pc = st.columns(min(len(point_files), 5))
+                for _i, _f in enumerate(point_files):
+                    with _pc[_i % len(_pc)]:
+                        st.image(_f, width=100, caption=f"📷 ポイント{_i+1}")
 
             st.markdown("### 💰 " + t("ui.training.offer.header"))
             st.caption(t("ui.training.offer.after_consult"))
@@ -3502,9 +3522,13 @@ def _training_my_results():
             cols = st.columns(2)
             cols[0].metric("あなたの買取金額", f"${offer}")
             cols[1].metric("正解の買取金額", ans)
-            # 4軸
-            _ev = {"適切": "🟢", "要改善": "🟡", "Good": "🟢", "Needs work": "🟡"}
-            def _e(v): return f"{_ev.get(str(v), '')} {v}" if v else "—"
+            # 4軸(v0.13.1: 3段階対応 + 旧2択の後方互換)
+            _ev = {
+                "適切": "🟢", "少し改善": "🟡", "要改善": "🔴",
+                # --- 旧表記の後方互換 ---
+                "要改善 ": "🔴", "Good": "🟢", "Needs work": "🔴",
+            }
+            def _e(v): return f"{_ev.get(str(v).strip(), '⚪')} {v}" if v else "—"
             st.markdown(
                 f"- {t('ui.training_review.axis1')}: {_e(row.get('eval_input',''))}\n"
                 f"- {t('ui.training_review.axis2')}: {_e(row.get('eval_market_image',''))}\n"
@@ -3583,19 +3607,43 @@ def training_review_mode():
     c1, c2 = st.columns(2)
     c1.metric("未評価", len(pending))
     c2.metric("評価済", len(reviewed))
+
+    # v0.13.1 (項目2): 未評価のstaff別残数を表示
+    if not pending.empty:
+        _pend_counts = (
+            pending["staff"].fillna("(不明)").astype(str).str.strip()
+            .replace("", "(不明)").value_counts()
+        )
+        _breakdown = " / ".join(f"{name} {cnt}件" for name, cnt in _pend_counts.items())
+        st.caption("👤 未評価の内訳: " + _breakdown)
+
+    # v0.13.1 (項目3): 評価済履歴を常時表示(staff別絞り込みつき)
+    with st.expander(f"📚 評価済の履歴を見る({len(reviewed)}件)"):
+        if reviewed.empty:
+            st.caption(t("ui.training_review.no_history"))
+        else:
+            _rev_staff = sorted({
+                str(s).strip() for s in reviewed["staff"].fillna("").tolist() if str(s).strip()
+            })
+            _sel_rev_staff = st.selectbox(
+                "staff絞り込み", [t("ui.filter.all")] + _rev_staff,
+                key="train_review_history_staff_filter")
+            _done = reviewed.copy()
+            if _sel_rev_staff != t("ui.filter.all"):
+                _done = _done[
+                    _done["staff"].fillna("").astype(str).str.strip() == _sel_rev_staff
+                ]
+            _done = _done.sort_values("timestamp", ascending=False)
+            show_cols = [c for c in ["timestamp", "staff", "brand_ja", "product_name",
+                         "staff_offer_price", "expert_answer_min", "expert_answer_max",
+                         "price_gap", "overall_mark", "eval_comment"] if c in _done.columns]
+            st.caption(f"{len(_done)}件")
+            st.dataframe(_done[show_cols], use_container_width=True, hide_index=True)
+
     st.markdown("---")
 
     if pending.empty:
         st.success(t("ui.training_review.none_pending"))
-        with st.expander(t("ui.training_review.show_history")):
-            if reviewed.empty:
-                st.caption(t("ui.training_review.no_history"))
-            else:
-                done = reviewed.sort_values("timestamp", ascending=False)
-                show_cols = [c for c in ["timestamp", "staff", "brand_ja", "product_name",
-                             "staff_offer_price", "expert_answer_price", "price_gap",
-                             "overall_mark", "eval_comment"] if c in done.columns]
-                st.dataframe(done[show_cols], use_container_width=True, hide_index=True)
         return
 
     pending_sorted_all = pending.sort_values("timestamp", ascending=False).reset_index(drop=True)
@@ -3644,6 +3692,18 @@ def training_review_mode():
             st.markdown(f"**相場メモ**: ${pmin} 〜 ${pmax}")
         st.markdown(f"**🟦 staff の買取金額**: **${target.get('staff_offer_price', '')}**")
 
+        # v0.13.1 (項目4): 原価率を自動表示(買取額÷相場上限 〜 買取額÷相場下限)
+        try:
+            _offer = float(target.get("staff_offer_price", 0) or 0)
+            _pmin = float(pmin or 0)
+            _pmax = float(pmax or 0)
+        except (ValueError, TypeError):
+            _offer = _pmin = _pmax = 0.0
+        if _offer > 0 and _pmin > 0 and _pmax > 0:
+            _lo_rate = _offer / max(_pmin, _pmax) * 100  # 上限で割る=低い率
+            _hi_rate = _offer / min(_pmin, _pmax) * 100  # 下限で割る=高い率
+            st.markdown(f"**📊 原価率**: 約 {_lo_rate:.0f}〜{_hi_rate:.0f}%")
+
     # 画像2系統: screenshot_ids = "ts::market|ts::item"
     raw_ids = str(target.get("screenshot_ids", "") or "").strip()
     market_id, item_id = "", ""
@@ -3664,12 +3724,12 @@ def training_review_mode():
 
     # --- 4軸評価フォーム ---
     st.markdown(t("ui.training_review.expert_header"))
-    _OK = t("ui.training_review.eval_ok")
-    _NG = t("ui.training_review.eval_ng")
+    # v0.13.1: 2択(適切/要改善)→ 3段階(適切 / 少し改善 / 要改善)
+    _EVAL_CHOICES = ["適切", "少し改善", "要改善"]
     with st.form(f"train_review_form_{target_idx}"):
-        eval_input = st.radio(t("ui.training_review.axis1"), [_OK, _NG], horizontal=True, key=f"tr_ax1_{target_idx}")
-        eval_market = st.radio(t("ui.training_review.axis2"), [_OK, _NG], horizontal=True, key=f"tr_ax2_{target_idx}")
-        eval_rank = st.radio(t("ui.training_review.axis3"), [_OK, _NG], horizontal=True, key=f"tr_ax3_{target_idx}")
+        eval_input = st.radio(t("ui.training_review.axis1"), _EVAL_CHOICES, horizontal=True, key=f"tr_ax1_{target_idx}")
+        eval_market = st.radio(t("ui.training_review.axis2"), _EVAL_CHOICES, horizontal=True, key=f"tr_ax2_{target_idx}")
+        eval_rank = st.radio(t("ui.training_review.axis3"), _EVAL_CHOICES, horizontal=True, key=f"tr_ax3_{target_idx}")
 
         st.markdown("**" + t("ui.training_review.axis4") + "**")
         try:
@@ -3944,7 +4004,7 @@ def main():
             st.rerun()
 
         st.markdown("---")
-        st.markdown("**Chosuke v0.13.0 (cloud)**")
+        st.markdown("**Chosuke v0.13.1 (cloud)**")
         st.caption("Wise eyes never miss a corner.")
 
     # ロール外モードへの直接アクセスを防ぐ(保険)
@@ -3966,7 +4026,7 @@ def main():
 
     st.markdown(f"""
     <div class="chosuke-footer">
-        Chosuke v0.13.0 🦉 · Eco Ring Cambodia AI Appraisal Assistant<br>
+        Chosuke v0.13.1 🦉 · Eco Ring Cambodia AI Appraisal Assistant<br>
         {t("ui.footer.tagline")}
     </div>
     """, unsafe_allow_html=True)
