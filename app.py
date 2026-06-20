@@ -1039,7 +1039,10 @@ def init_data():
 
     sm = be.read_sheet("staff_master")
     if sm.empty or "staff_name" not in sm.columns or sm["staff_name"].fillna("").str.strip().eq("").all():
-        be.write_sheet("staff_master", pd.DataFrame({"staff_name": DEFAULT_STAFF_ROSTER}))
+        be.write_sheet("staff_master", pd.DataFrame({
+            "staff_name": DEFAULT_STAFF_ROSTER,
+            "slack_user_id": [""] * len(DEFAULT_STAFF_ROSTER),
+        }))
 
 
 # ============================================================
@@ -1078,11 +1081,80 @@ def add_staff_to_master(name: str) -> None:
     name = (name or "").strip()
     if not name:
         return
-    existing = load_staff_master()
-    if any(name.lower() == e.lower() for e in existing):
+    # v0.14.0: slack_user_id 列を保持したまま追記する
+    df = be.read_sheet("staff_master")
+    if "staff_name" not in df.columns or df.empty:
+        df = pd.DataFrame({"staff_name": load_staff_master()})
+    if "slack_user_id" not in df.columns:
+        df["slack_user_id"] = ""
+    existing_lower = {str(n).strip().lower() for n in df["staff_name"].fillna("").tolist()}
+    if name.lower() in existing_lower:
         return
-    updated = sorted(set(existing) | {name})
-    be.write_sheet("staff_master", pd.DataFrame({"staff_name": updated}))
+    new_row = pd.DataFrame({"staff_name": [name], "slack_user_id": [""]})
+    be.write_sheet("staff_master", pd.concat([df, new_row], ignore_index=True))
+
+
+# ============================================================
+# v0.14.0: staff の Slack ユーザーID マッピング
+# ============================================================
+def load_staff_slack_map() -> dict:
+    """{staff_name: slack_user_id} の辞書を返す。
+    slack_user_id 列が無い古いデータには後方互換で空を返す。"""
+    df = be.read_sheet("staff_master")
+    if df.empty or "staff_name" not in df.columns or "slack_user_id" not in df.columns:
+        return {}
+    out = {}
+    for _, row in df.iterrows():
+        nm = str(row.get("staff_name", "")).strip()
+        sid = str(row.get("slack_user_id", "")).strip()
+        if nm and sid:
+            out[nm] = sid
+    return out
+
+
+def set_staff_slack_id(name: str, slack_id: str) -> None:
+    """指定 staff の slack_user_id を更新する(無ければ列を新設)。"""
+    name = (name or "").strip()
+    df = be.read_sheet("staff_master")
+    if "staff_name" not in df.columns or df.empty:
+        df = pd.DataFrame({"staff_name": load_staff_master()})
+    if "slack_user_id" not in df.columns:
+        df["slack_user_id"] = ""
+    mask = df["staff_name"].fillna("").astype(str).str.strip().str.lower() == name.lower()
+    if mask.any():
+        df.loc[mask, "slack_user_id"] = (slack_id or "").strip()
+    else:
+        df = pd.concat([df, pd.DataFrame(
+            {"staff_name": [name], "slack_user_id": [(slack_id or "").strip()]}
+        )], ignore_index=True)
+    be.write_sheet("staff_master", df)
+
+
+def send_slack_dm(slack_user_id: str, text: str) -> tuple:
+    """Bot token で個人にDMを送る。成功なら (True, "") を返す。
+    token 未設定・送信失敗でも例外は投げず (False, 理由) を返す。"""
+    slack_user_id = (slack_user_id or "").strip()
+    if not slack_user_id:
+        return (False, "no_slack_id")
+    try:
+        token = st.secrets["SLACK_BOT_TOKEN"]
+    except Exception:
+        return (False, "no_token")
+    try:
+        import requests
+        resp = requests.post(
+            "https://slack.com/api/chat.postMessage",
+            headers={"Authorization": f"Bearer {token}",
+                     "Content-Type": "application/json; charset=utf-8"},
+            json={"channel": slack_user_id, "text": text},
+            timeout=8,
+        )
+        data = resp.json()
+        if data.get("ok"):
+            return (True, "")
+        return (False, data.get("error", "unknown_error"))
+    except Exception as e:
+        return (False, f"exception:{e}")
 
 def load_checklists() -> pd.DataFrame:
     return be.read_sheet("checklists")
@@ -3790,7 +3862,41 @@ def training_review_mode():
             df.at[target_idx, "review_status"] = "reviewed"
             df.at[target_idx, "reviewed_at"] = datetime.now().isoformat(timespec="seconds")
             be.write_sheet("training_history", df)
-            st.success(t("ui.training_review.saved"))
+
+            # v0.14.0: 評価された staff 本人に Slack DM 通知(失敗しても保存は成功扱い)
+            _staff_name = str(target.get("staff", "")).strip()
+            _slack_map = load_staff_slack_map()
+            _sid = _slack_map.get(_staff_name, "")
+            _brand = target.get("brand_ja", "") or target.get("brand_en", "")
+            _item = target.get("product_name", "")
+            _result = _MARKS[mark_label]
+            _ans = ""
+            if expert_min > 0 and expert_max > 0:
+                _ans = f"${expert_min}–${expert_max}"
+            _dm = (
+                "🦉 *Chosuke Training Reviewed!* / ការវាយតម្លៃរបស់អ្នកត្រូវបានពិនិត្យ\n"
+                f"• Brand / ម៉ាក: {_brand}\n"
+                f"• Item / ផលិតផល: {_item}\n"
+                f"• Result / លទ្ធផល: {_result}\n"
+            )
+            if _ans:
+                _dm += f"• Correct range / តម្លៃត្រឹមត្រូវ: {_ans}\n"
+            if (eval_comment or "").strip():
+                _dm += f"• Comment / មតិ: {eval_comment.strip()}\n"
+            _dm += "\nOpen Chosuke → *My Results / លទ្ធផលរបស់ខ្ញុំ* to see details."
+
+            _ok, _why = send_slack_dm(_sid, _dm)
+            if _ok:
+                st.success(t("ui.training_review.saved") + " ✅ Slack通知を送信しました")
+            elif _why == "no_slack_id":
+                st.success(t("ui.training_review.saved"))
+                st.caption(f"⚠️ {_staff_name} のSlack IDが未登録のため通知はスキップしました(設定モードで登録できます)")
+            elif _why == "no_token":
+                st.success(t("ui.training_review.saved"))
+                st.caption("⚠️ SLACK_BOT_TOKEN が未設定のため通知は送られていません")
+            else:
+                st.success(t("ui.training_review.saved"))
+                st.caption(f"⚠️ Slack通知の送信に失敗しました(理由: {_why})")
             st.rerun()
 
         if skip_btn:
@@ -3839,6 +3945,36 @@ def settings_mode():
             st.rerun()
         else:
             st.warning(t("ui.settings.need_name"))
+
+    # v0.14.0: staff の Slack ユーザーID 登録(評価通知DMの宛先)
+    st.markdown("---")
+    st.markdown("### 🔔 Slack通知の宛先設定")
+    st.caption(
+        "各staffのSlackユーザーID(U…)を登録すると、トレーニング評価を保存したときに本人へDMが届きます。"
+        "\nIDの取り方: Slackで対象者のプロフィール →「⋮」→「Copy member ID」(Uで始まる文字列)"
+    )
+    try:
+        _has_token = bool(st.secrets.get("SLACK_BOT_TOKEN", ""))
+    except Exception:
+        _has_token = False
+    if _has_token:
+        st.caption("✅ SLACK_BOT_TOKEN は設定済みです")
+    else:
+        st.caption("⚠️ SLACK_BOT_TOKEN が未設定です(Streamlitの Settings → Secrets に登録してください)")
+
+    _slack_map = load_staff_slack_map()
+    for _nm in _roster:
+        _cur = _slack_map.get(_nm, "")
+        _c1, _c2 = st.columns([2, 3])
+        with _c1:
+            st.text(_nm + (" ✅" if _cur else " —"))
+        with _c2:
+            _val = st.text_input(
+                f"Slack ID ({_nm})", value=_cur, key=f"slackid_{_nm}",
+                placeholder="U01ABC2DEF", label_visibility="collapsed")
+        if _val.strip() != _cur:
+            set_staff_slack_id(_nm, _val.strip())
+            st.toast(f"{_nm} のSlack IDを更新しました")
 
     st.markdown("---")
     st.markdown(t("ui.settings.api_header"))
@@ -4004,7 +4140,7 @@ def main():
             st.rerun()
 
         st.markdown("---")
-        st.markdown("**Chosuke v0.13.1 (cloud)**")
+        st.markdown("**Chosuke v0.14.0 (cloud)**")
         st.caption("Wise eyes never miss a corner.")
 
     # ロール外モードへの直接アクセスを防ぐ(保険)
@@ -4026,7 +4162,7 @@ def main():
 
     st.markdown(f"""
     <div class="chosuke-footer">
-        Chosuke v0.13.1 🦉 · Eco Ring Cambodia AI Appraisal Assistant<br>
+        Chosuke v0.14.0 🦉 · Eco Ring Cambodia AI Appraisal Assistant<br>
         {t("ui.footer.tagline")}
     </div>
     """, unsafe_allow_html=True)
