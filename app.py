@@ -3193,6 +3193,34 @@ def _training_submit_panel():
                 key=_tk("stamp")
             )
 
+        # ===== 現物写真(全体+査定ポイント): 相談前に入力 =====
+        st.markdown("### 🖼️ " + t("ui.training.img.header"))
+        st.info("📷 **査定している“現物”の写真** をここに入れてください。"
+                "相場スクショ(画面)ではありません。/ Photos of the **actual item** (not market screenshots).")
+        st.markdown("**" + t("ui.training.img.overall") + "**")
+        st.caption(t("ui.training.img.overall_caption"))
+        overall_file = st.file_uploader(
+            "📷 " + t("ui.training.img.overall"), type=["png", "jpg", "jpeg"],
+            accept_multiple_files=False, key=_tk("img_overall"))
+        if overall_file is not None:
+            _oc = st.columns([1, 3])
+            with _oc[0]:
+                st.image(overall_file, width=110, caption="📷 全体")
+        st.markdown("**" + t("ui.training.img.points") + "**")
+        st.caption(t("ui.training.img.points_caption"))
+        point_files = st.file_uploader(
+            "📷 " + t("ui.training.img.points"), type=["png", "jpg", "jpeg"],
+            accept_multiple_files=True, key=_tk("img_points"))
+        if point_files and len(point_files) > 5:
+            st.warning("査定ポイント画像は最大5枚です。先頭5枚のみ使用します。")
+            point_files = point_files[:5]
+        if point_files:
+            st.caption(f"📷 査定ポイント {len(point_files)}枚")
+            _pc = st.columns(min(len(point_files), 5))
+            for _i, _f in enumerate(point_files):
+                with _pc[_i % len(_pc)]:
+                    st.image(_f, width=100, caption=f"📷 ポイント{_i+1}")
+
         st.markdown("### " + t("ui.market.header"))
         st.caption(t("ui.market.caption"))
         col_pmin, col_pmax = st.columns(2)
@@ -3409,35 +3437,9 @@ def _training_submit_panel():
                         st.checkbox(f"**{td(row['check_item'], st.session_state.lang)}**", key=chk_key)
                         st.caption(td(row["hint"], st.session_state.lang))
 
-            # ===== 応答を見た後: 商品画像 + 自分の買取金額 + 提出 =====
+            # ===== 応答を見た後: 自分の買取金額 + 提出 =====
+            # (現物写真は相談前セクションで入力済み)
             st.markdown("---")
-            st.markdown("### 🖼️ " + t("ui.training.img.header"))
-            st.info("📷 **査定している“現物”の写真** をここに入れてください。"
-                    "相場スクショ(画面)ではありません。/ Photos of the **actual item** you are appraising (not market screenshots).")
-            st.markdown("**" + t("ui.training.img.overall") + "**")
-            st.caption(t("ui.training.img.overall_caption"))
-            overall_file = st.file_uploader(
-                "📷 " + t("ui.training.img.overall"), type=["png", "jpg", "jpeg"],
-                accept_multiple_files=False, key=_tk("img_overall"))
-            if overall_file is not None:
-                _oc = st.columns([1, 3])
-                with _oc[0]:
-                    st.image(overall_file, width=110, caption="📷 全体")
-            st.markdown("**" + t("ui.training.img.points") + "**")
-            st.caption(t("ui.training.img.points_caption"))
-            point_files = st.file_uploader(
-                "📷 " + t("ui.training.img.points"), type=["png", "jpg", "jpeg"],
-                accept_multiple_files=True, key=_tk("img_points"))
-            if point_files and len(point_files) > 5:
-                st.warning("査定ポイント画像は最大5枚です。先頭5枚のみ使用します。")
-                point_files = point_files[:5]
-            if point_files:
-                st.caption(f"📷 査定ポイント {len(point_files)}枚")
-                _pc = st.columns(min(len(point_files), 5))
-                for _i, _f in enumerate(point_files):
-                    with _pc[_i % len(_pc)]:
-                        st.image(_f, width=100, caption=f"📷 ポイント{_i+1}")
-
             st.markdown("### 💰 " + t("ui.training.offer.header"))
             st.caption(t("ui.training.offer.after_consult"))
             staff_offer = st.number_input(
