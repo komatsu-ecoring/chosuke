@@ -3666,6 +3666,29 @@ def training_review_mode():
     st.markdown("## 🎓 " + t("ui.mode.training_review"))
     st.caption(t("ui.training_review.caption"))
 
+    # --- 直近の Slack 通知結果(rerun でも消えないよう常時表示) ---
+    _lsr = st.session_state.get("last_slack_result")
+    if _lsr:
+        _staff = _lsr.get("staff", "")
+        _sid = _lsr.get("slack_id", "")
+        _at = _lsr.get("at", "")
+        if _lsr.get("ok"):
+            st.success(f"✅ Slack通知を送信しました → {_staff}({_sid})  [{_at}]")
+        else:
+            _why = _lsr.get("why", "")
+            _reason = {
+                "no_slack_id": "Slack IDが未登録です(設定モードで登録してください)",
+                "no_token": "SLACK_BOT_TOKEN が未設定です",
+                "not_in_channel": "BotがそのユーザーにDMを送れません(im:write スコープを追加してください)",
+                "channel_not_found": "Slack IDが見つかりません(U… の形式か確認してください)",
+            }.get(_why, _why)
+            st.error(f"⚠️ Slack通知 失敗 → {_staff}({_sid})  理由: {_reason}  [{_at}]")
+        with st.expander("📨 送信しようとした内容を見る"):
+            st.code(_lsr.get("dm", ""), language=None)
+        if st.button("この通知ログを消す", key="clear_slack_log"):
+            st.session_state.pop("last_slack_result", None)
+            st.rerun()
+
     df = load_training()
     if df.empty:
         st.info(t("ui.training.no_submit"))
@@ -3888,17 +3911,15 @@ def training_review_mode():
             _dm += "\nOpen Chosuke → *My Results / លទ្ធផលរបស់ខ្ញុំ* to see details."
 
             _ok, _why = send_slack_dm(_sid, _dm)
-            if _ok:
-                st.success(t("ui.training_review.saved") + " ✅ Slack通知を送信しました")
-            elif _why == "no_slack_id":
-                st.success(t("ui.training_review.saved"))
-                st.caption(f"⚠️ {_staff_name} のSlack IDが未登録のため通知はスキップしました(設定モードで登録できます)")
-            elif _why == "no_token":
-                st.success(t("ui.training_review.saved"))
-                st.caption("⚠️ SLACK_BOT_TOKEN が未設定のため通知は送られていません")
-            else:
-                st.success(t("ui.training_review.saved"))
-                st.caption(f"⚠️ Slack通知の送信に失敗しました(理由: {_why})")
+            # 送信結果を session_state に残す(rerun で消えないよう、画面上部に常時表示する)
+            st.session_state["last_slack_result"] = {
+                "ok": _ok,
+                "why": _why,
+                "staff": _staff_name,
+                "slack_id": _sid,
+                "at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                "dm": _dm,
+            }
             st.rerun()
 
         if skip_btn:
