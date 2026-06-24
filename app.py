@@ -1940,6 +1940,35 @@ def inject_css():
     </style>
     """, unsafe_allow_html=True)
 
+    # --- Streamlit の "C" キー単体ショートカット(Clear caches)を無効化する ---
+    # 商品名コピー(ドラッグ選択中など)で C が拾われ、毎回 Clear caches ダイアログが
+    # 出てしまう問題への対処。Ctrl+C / Cmd+C(本物のコピー)は一切妨げない。
+    import streamlit.components.v1 as _components
+    _components.html(
+        """
+        <script>
+        const doc = window.parent.document;
+        if (!doc._chosukeKeyGuard) {
+            doc._chosukeKeyGuard = true;
+            doc.addEventListener("keydown", function (e) {
+                // 修飾キー付き(Ctrl/Cmd/Alt)は本物のショートカットなので通す
+                if (e.ctrlKey || e.metaKey || e.altKey) return;
+                // 入力欄にフォーカスがあるときは何もしない
+                const tag = (e.target && e.target.tagName) ? e.target.tagName.toLowerCase() : "";
+                if (tag === "input" || tag === "textarea" || e.target.isContentEditable) return;
+                // 修飾キーなしの C / R(Clear caches / Rerun)を握りつぶす
+                const k = (e.key || "").toLowerCase();
+                if (k === "c" || k === "r") {
+                    e.stopPropagation();
+                    e.preventDefault();
+                }
+            }, true);
+        }
+        </script>
+        """,
+        height=0,
+    )
+
 
 def render_header():
     st.markdown("""
