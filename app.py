@@ -3857,6 +3857,23 @@ def training_review_mode():
         eval_market = st.radio(t("ui.training_review.axis2"), _EVAL_CHOICES, horizontal=True, key=f"tr_ax2_{target_idx}")
         eval_rank = st.radio(t("ui.training_review.axis3"), _EVAL_CHOICES, horizontal=True, key=f"tr_ax3_{target_idx}")
 
+        # --- ① 先に正解の相場メモ(売れる見込みレンジ)を入力 ---
+        st.markdown("**📈 正解の相場(売れる見込みレンジ・USD)**")
+        _staff_pmin = target.get("price_min_usd", "")
+        _staff_pmax = target.get("price_max_usd", "")
+        if _staff_pmin and _staff_pmax:
+            st.caption(f"staff の相場メモ: ${_staff_pmin} 〜 ${_staff_pmax}")
+        _em1, _em2 = st.columns(2)
+        with _em1:
+            expert_market_min = st.number_input(
+                "正解の相場・下限(USD)", min_value=0, step=1, format="%d",
+                key=f"tr_mmin_{target_idx}")
+        with _em2:
+            expert_market_max = st.number_input(
+                "正解の相場・上限(USD)", min_value=0, step=1, format="%d",
+                key=f"tr_mmax_{target_idx}")
+
+        # --- ② 次に正解の買取金額を入力 ---
         st.markdown("**" + t("ui.training_review.axis4") + "**")
         try:
             _staff_offer_val = float(target.get("staff_offer_price", 0) or 0)
@@ -3874,22 +3891,6 @@ def training_review_mode():
                 t("ui.training_review.expert_price_max"), min_value=0, step=1, format="%d",
                 key=f"tr_emax_{target_idx}",
                 help=t("ui.training_review.max_help"))
-
-        # --- 正解の相場メモ(下限/上限)。原価率の分母になる ---
-        st.markdown("**📈 正解の相場(売れる見込みレンジ・USD)**")
-        _staff_pmin = target.get("price_min_usd", "")
-        _staff_pmax = target.get("price_max_usd", "")
-        if _staff_pmin and _staff_pmax:
-            st.caption(f"staff の相場メモ: ${_staff_pmin} 〜 ${_staff_pmax}")
-        _em1, _em2 = st.columns(2)
-        with _em1:
-            expert_market_min = st.number_input(
-                "正解の相場・下限(USD)", min_value=0, step=1, format="%d",
-                key=f"tr_mmin_{target_idx}")
-        with _em2:
-            expert_market_max = st.number_input(
-                "正解の相場・上限(USD)", min_value=0, step=1, format="%d",
-                key=f"tr_mmax_{target_idx}")
 
         st.markdown("**" + t("ui.training_review.mark") + "**")
         _MARKS = {
