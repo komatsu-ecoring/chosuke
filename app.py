@@ -3875,6 +3875,22 @@ def training_review_mode():
                 key=f"tr_emax_{target_idx}",
                 help=t("ui.training_review.max_help"))
 
+        # --- 正解の相場メモ(下限/上限)。原価率の分母になる ---
+        st.markdown("**📈 正解の相場(売れる見込みレンジ・USD)**")
+        _staff_pmin = target.get("price_min_usd", "")
+        _staff_pmax = target.get("price_max_usd", "")
+        if _staff_pmin and _staff_pmax:
+            st.caption(f"staff の相場メモ: ${_staff_pmin} 〜 ${_staff_pmax}")
+        _em1, _em2 = st.columns(2)
+        with _em1:
+            expert_market_min = st.number_input(
+                "正解の相場・下限(USD)", min_value=0, step=1, format="%d",
+                key=f"tr_mmin_{target_idx}")
+        with _em2:
+            expert_market_max = st.number_input(
+                "正解の相場・上限(USD)", min_value=0, step=1, format="%d",
+                key=f"tr_mmax_{target_idx}")
+
         st.markdown("**" + t("ui.training_review.mark") + "**")
         _MARKS = {
             t("ui.training_review.mark.hanamaru"): "hanamaru",
@@ -3911,6 +3927,19 @@ def training_review_mode():
             df.at[target_idx, "expert_answer_min"] = expert_min if expert_min > 0 else ""
             df.at[target_idx, "expert_answer_max"] = expert_max if expert_max > 0 else ""
             df.at[target_idx, "price_gap"] = gap
+            # 正解の相場メモを保存
+            df.at[target_idx, "expert_market_min"] = expert_market_min if expert_market_min > 0 else ""
+            df.at[target_idx, "expert_market_max"] = expert_market_max if expert_market_max > 0 else ""
+            # 原価率 = 正解買取 ÷ 正解相場(レンジ)。上限で割ると低い率、下限で割ると高い率
+            _cost_rate_str = ""
+            _buy_for_rate = max(expert_min, expert_max)  # 正解買取の代表値(上限)
+            if _buy_for_rate > 0 and expert_market_min > 0 and expert_market_max > 0:
+                _mlo = min(expert_market_min, expert_market_max)
+                _mhi = max(expert_market_min, expert_market_max)
+                _lo_r = _buy_for_rate / _mhi * 100   # 相場上限で割る
+                _hi_r = _buy_for_rate / _mlo * 100   # 相場下限で割る
+                _cost_rate_str = f"{_lo_r:.0f}〜{_hi_r:.0f}%"
+            df.at[target_idx, "expert_cost_rate"] = _cost_rate_str
             df.at[target_idx, "overall_mark"] = _MARKS[mark_label]
             df.at[target_idx, "eval_comment"] = eval_comment
             df.at[target_idx, "review_status"] = "reviewed"
@@ -3935,6 +3964,15 @@ def training_review_mode():
             )
             if _ans:
                 _dm += f"• Correct range / តម្លៃត្រឹមត្រូវ: {_ans}\n"
+            # 正解の相場レンジを通知に追加
+            _market_ans = ""
+            if expert_market_min > 0 and expert_market_max > 0:
+                _market_ans = f"${expert_market_min}–${expert_market_max}"
+            if _market_ans:
+                _dm += f"• Correct market / តំលៃទីផ្សារ: {_market_ans}\n"
+            # 原価率を通知に追加
+            if _cost_rate_str:
+                _dm += f"• Cost rate / អត្រាតម្លៃដើម: {_cost_rate_str}\n"
             if (eval_comment or "").strip():
                 _dm += f"• Comment / មតិ: {eval_comment.strip()}\n"
             _dm += "\nOpen Chosuke → *My Results / លទ្ធផលរបស់ខ្ញុំ* to see details."
@@ -4053,83 +4091,10 @@ def _check_password(role: str, entered: str) -> bool:
     return False
 
 
-def _session_secret() -> str:
-    """トークン署名用の秘密鍵。secrets にあれば使い、無ければパスワードから導出する。"""
-    try:
-        s = st.secrets.get("session_secret", "")
-        if s:
-            return str(s)
-    except Exception:
-        pass
-    # フォールバック: admin/staff パスワードを連結したものを鍵にする
-    try:
-        return str(st.secrets.get("admin_password", "")) + "|" + str(st.secrets.get("staff_password", ""))
-    except Exception:
-        return "chosuke-fallback-secret"
-
-
-def _make_auth_token(role: str) -> str:
-    """role に対する改ざん不可能なトークンを作る(HMAC-SHA256)。"""
-    import hashlib, hmac
-    msg = f"chosuke-auth:{role}".encode("utf-8")
-    key = _session_secret().encode("utf-8")
-    sig = hmac.new(key, msg, hashlib.sha256).hexdigest()[:32]
-    return f"{role}.{sig}"
-
-
-def _verify_auth_token(token: str):
-    """トークンを検証し、正しければ role を返す。不正なら None。"""
-    import hashlib, hmac
-    if not token or "." not in token:
-        return None
-    role, _, sig = token.partition(".")
-    if role not in ("staff", "admin"):
-        return None
-    expected = _make_auth_token(role)
-    # 定数時間比較
-    if hmac.compare_digest(token, expected):
-        return role
-    return None
-
-
-def _persist_login(role: str):
-    """ログイン状態を URL クエリパラメータに保存する(セッション切れ対策)。"""
-    try:
-        st.query_params["auth"] = _make_auth_token(role)
-    except Exception:
-        pass
-
-
-def _restore_login_from_url() -> bool:
-    """URL のトークンから session_state を復元する。復元できたら True。"""
-    if st.session_state.get("authed"):
-        return True
-    try:
-        token = st.query_params.get("auth", "")
-    except Exception:
-        token = ""
-    role = _verify_auth_token(token)
-    if role:
-        st.session_state["authed"] = True
-        st.session_state["role"] = role
-        return True
-    return False
-
-
-def _clear_persisted_login():
-    """URL クエリパラメータのログイン状態を消す。"""
-    try:
-        if "auth" in st.query_params:
-            del st.query_params["auth"]
-    except Exception:
-        pass
-
-
 def login_gate() -> bool:
     """未ログインならログイン画面を出し、False を返す。
     ログイン済みなら True。staff / admin の2区分。英語併記。"""
-    # セッション切れ対策: session_state が空でも URL トークンから復元する
-    if _restore_login_from_url():
+    if st.session_state.get("authed"):
         return True
 
     render_header()
@@ -4163,7 +4128,6 @@ def login_gate() -> bool:
                 st.session_state["role"] = role
                 st.session_state.pop("login_role_choice", None)
                 st.session_state.pop("login_pw", None)
-                _persist_login(role)   # セッション切れでも復元できるよう URL に保存
                 st.rerun()
             else:
                 st.error(t("ui.login.incorrect"))
@@ -4263,7 +4227,6 @@ def main():
         if st.button(t("ui.logout"), use_container_width=True):
             for k in ["authed", "role", "login_role_choice"]:
                 st.session_state.pop(k, None)
-            _clear_persisted_login()   # URL のログイントークンも消す
             st.rerun()
 
         st.markdown("---")
