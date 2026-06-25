@@ -1130,6 +1130,22 @@ def set_staff_slack_id(name: str, slack_id: str) -> None:
     be.write_sheet("staff_master", df)
 
 
+# 提出通知を送るチャンネル(#鑑定士勉強部屋)
+TRAINING_NOTIFY_CHANNEL = "C09R0NJC67P"
+
+# Chosuke の公開URL(Slackメッセージ末尾に毎回添付する)
+CHOSUKE_URL = "https://chosuke-on5ltymaznciwncsxi3nhy.streamlit.app"
+
+
+def _chosuke_link_line() -> str:
+    """Slack メッセージ末尾に付ける Chosuke へのリンク行。"""
+    try:
+        _u = st.secrets.get("chosuke_url", "") or CHOSUKE_URL
+    except Exception:
+        _u = CHOSUKE_URL
+    return f"\n🦉 Open Chosuke / បើក Chosuke → {_u}"
+
+
 def send_slack_dm(slack_user_id: str, text: str) -> tuple:
     """Bot token で個人にDMを送る。成功なら (True, "") を返す。
     token 未設定・送信失敗でも例外は投げず (False, 理由) を返す。"""
@@ -3538,6 +3554,22 @@ def _training_submit_panel():
                         "expert_answer_price": "", "price_gap": "",
                         "overall_mark": "", "eval_comment": "", "reviewed_at": "",
                     })
+                    # admin へ提出通知(#鑑定士勉強部屋)。失敗しても提出は成功扱い。
+                    try:
+                        _sub_brand = snap.get("brand_ja", "") or snap.get("brand_en", "")
+                        _sub_item = snap.get("product_name", "")
+                        _sub_staff = snap.get("staff", "")
+                        _notify = (
+                            "📥 *新しいトレーニング提出がありました* / New training submission\n"
+                            f"• Staff: {_sub_staff}\n"
+                            f"• Brand: {_sub_brand}\n"
+                            f"• Item: {_sub_item}\n"
+                            f"• Buy offer: ${staff_offer}\n"
+                            + _chosuke_link_line()
+                        )
+                        send_slack_dm(TRAINING_NOTIFY_CHANNEL, _notify)
+                    except Exception:
+                        pass
                     st.session_state["t_submitted_done"] = True
                     st.toast("✅ 提出しました!裕平さんの評価を待ちましょう。")
                     st.rerun()
@@ -3977,6 +4009,7 @@ def training_review_mode():
             if (eval_comment or "").strip():
                 _dm += f"• Comment / មតិ: {eval_comment.strip()}\n"
             _dm += "\nOpen Chosuke → *My Results / លទ្ធផលរបស់ខ្ញុំ* to see details."
+            _dm += _chosuke_link_line()
 
             _ok, _why = send_slack_dm(_sid, _dm)
             # 送信結果を session_state に残す(rerun で消えないよう、画面上部に常時表示する)
