@@ -1162,7 +1162,12 @@ def send_slack_dm(slack_user_id: str, text: str) -> tuple:
             "https://slack.com/api/chat.postMessage",
             headers={"Authorization": f"Bearer {token}",
                      "Content-Type": "application/json; charset=utf-8"},
-            json={"channel": slack_user_id, "text": text},
+            json={
+                "channel": slack_user_id,
+                "text": text,
+                "username": "Chosuke",
+                "icon_emoji": ":owl:",
+            },
             timeout=8,
         )
         data = resp.json()
