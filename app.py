@@ -4053,10 +4053,83 @@ def _check_password(role: str, entered: str) -> bool:
     return False
 
 
+def _session_secret() -> str:
+    """トークン署名用の秘密鍵。secrets にあれば使い、無ければパスワードから導出する。"""
+    try:
+        s = st.secrets.get("session_secret", "")
+        if s:
+            return str(s)
+    except Exception:
+        pass
+    # フォールバック: admin/staff パスワードを連結したものを鍵にする
+    try:
+        return str(st.secrets.get("admin_password", "")) + "|" + str(st.secrets.get("staff_password", ""))
+    except Exception:
+        return "chosuke-fallback-secret"
+
+
+def _make_auth_token(role: str) -> str:
+    """role に対する改ざん不可能なトークンを作る(HMAC-SHA256)。"""
+    import hashlib, hmac
+    msg = f"chosuke-auth:{role}".encode("utf-8")
+    key = _session_secret().encode("utf-8")
+    sig = hmac.new(key, msg, hashlib.sha256).hexdigest()[:32]
+    return f"{role}.{sig}"
+
+
+def _verify_auth_token(token: str):
+    """トークンを検証し、正しければ role を返す。不正なら None。"""
+    import hashlib, hmac
+    if not token or "." not in token:
+        return None
+    role, _, sig = token.partition(".")
+    if role not in ("staff", "admin"):
+        return None
+    expected = _make_auth_token(role)
+    # 定数時間比較
+    if hmac.compare_digest(token, expected):
+        return role
+    return None
+
+
+def _persist_login(role: str):
+    """ログイン状態を URL クエリパラメータに保存する(セッション切れ対策)。"""
+    try:
+        st.query_params["auth"] = _make_auth_token(role)
+    except Exception:
+        pass
+
+
+def _restore_login_from_url() -> bool:
+    """URL のトークンから session_state を復元する。復元できたら True。"""
+    if st.session_state.get("authed"):
+        return True
+    try:
+        token = st.query_params.get("auth", "")
+    except Exception:
+        token = ""
+    role = _verify_auth_token(token)
+    if role:
+        st.session_state["authed"] = True
+        st.session_state["role"] = role
+        return True
+    return False
+
+
+def _clear_persisted_login():
+    """URL クエリパラメータのログイン状態を消す。"""
+    try:
+        if "auth" in st.query_params:
+            del st.query_params["auth"]
+    except Exception:
+        pass
+
+
 def login_gate() -> bool:
     """未ログインならログイン画面を出し、False を返す。
     ログイン済みなら True。staff / admin の2区分。英語併記。"""
-    if st.session_state.get("authed"):
+    # セッション切れ対策: session_state が空でも URL トークンから復元する
+    if _restore_login_from_url():
         return True
 
     render_header()
@@ -4090,6 +4163,7 @@ def login_gate() -> bool:
                 st.session_state["role"] = role
                 st.session_state.pop("login_role_choice", None)
                 st.session_state.pop("login_pw", None)
+                _persist_login(role)   # セッション切れでも復元できるよう URL に保存
                 st.rerun()
             else:
                 st.error(t("ui.login.incorrect"))
@@ -4189,6 +4263,7 @@ def main():
         if st.button(t("ui.logout"), use_container_width=True):
             for k in ["authed", "role", "login_role_choice"]:
                 st.session_state.pop(k, None)
+            _clear_persisted_login()   # URL のログイントークンも消す
             st.rerun()
 
         st.markdown("---")
