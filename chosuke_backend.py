@@ -84,6 +84,7 @@ SHEET_SCHEMAS = {
         "accessories", "rank", "price_min_usd", "price_max_usd",
         "image_count",            # アップした画像枚数(全体1+査定ポイント最大5)
         "staff_offer_price",      # staff が出した自分の買取金額(本格版の肝)
+        "staff_note",             # v0.15: staff の最終所見(自由記述・1文字以上で提出可)
         "screenshot_ids",         # 画像の shot_id(=timestamp)。screenshots タブ参照キー
         # --- 提出ステータス ---
         "review_status",          # pending / reviewed / skipped

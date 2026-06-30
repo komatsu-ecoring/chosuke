@@ -3344,6 +3344,10 @@ def _training_submit_panel():
         }
         # 新しい相談をしたら、前回の提出完了フラグはリセット
         st.session_state.pop("t_submitted_done", None)
+        # v0.15: 新しい相談を始めたら二重送信ガードの状態もリセット
+        #   (前回の提出シグネチャ・処理中ロックを引きずらない)
+        st.session_state.pop("t_last_sig", None)
+        st.session_state.pop("t_submitting", None)
 
 
     # ----- 右: Chosukeの応答 -----
@@ -3495,13 +3499,26 @@ def _training_submit_panel():
             staff_offer = st.number_input(
                 t("ui.training.offer.label"), min_value=0, step=1, format="%d", key=_tk("offer"))
 
+            # v0.15: 最終所見(自由記述)。1文字以上の入力を提出の必須条件にする。
+            #   → 空欄のまま誤って提出してしまう事故を防ぐ。
+            staff_note = st.text_area(
+                t("ui.training.note.label"),
+                key=_tk("note"),
+                placeholder=t("ui.training.note.placeholder"),
+                help=t("ui.training.note.help"),
+                height=90,
+            )
+
             overall_ok = overall_file is not None
             offer_ok = staff_offer > 0
-            submit_ready = overall_ok and offer_ok
+            note_ok = bool(str(staff_note).strip())   # 1文字でも書いてあればOK
+            submit_ready = overall_ok and offer_ok and note_ok
             if not overall_ok:
                 sub_help = t("ui.training.need_overall")
             elif not offer_ok:
                 sub_help = t("ui.training.need_offer")
+            elif not note_ok:
+                sub_help = t("ui.training.need_note")
             else:
                 sub_help = None
 
@@ -3513,52 +3530,80 @@ def _training_submit_panel():
                     t("ui.training.tab.submit"), type="primary", use_container_width=True,
                     disabled=not submit_ready, help=sub_help, key="train_submit_btn")
                 if do_submit and submit_ready:
+                    # v0.15: 二重送信ガード。
+                    #   現場から同じ内容が2回飛ぶ事故を防ぐため、
+                    #   (a) 処理中フラグ t_submitting を立てている間はスキップ
+                    #   (b) 直前に送った内容のハッシュと一致したらスキップ
+                    #   ※フラグ・ハッシュは append の「前」に立てるのが肝。
+                    #     append 後に立てる従来方式だと、遅い回線で append 中に
+                    #     再タップされたぶんがすり抜けていた。
                     snap = st.session_state.get("t_pending", {})
+                    _dup_sig = "|".join(str(x) for x in [
+                        snap.get("staff", ""), snap.get("brand_ja", ""),
+                        snap.get("product_name", ""), staff_offer,
+                        str(staff_note).strip(),
+                    ])
+                    if st.session_state.get("t_submitting"):
+                        st.warning(t("ui.training.submitting_wait"))
+                        st.stop()
+                    if st.session_state.get("t_last_sig") == _dup_sig:
+                        st.session_state["t_submitted_done"] = True
+                        st.info(t("ui.training.dup_blocked"))
+                        st.stop()
+                    st.session_state["t_submitting"] = True   # ロック開始
+
                     _ts_iso = datetime.now().isoformat(timespec="seconds")
                     # 相場参考スクショ(②): shot_id "ts::market"
                     market_shot_id = _ts_iso + "::market"
                     market_count = 0
-                    if uploaded_files:
-                        market_count = len(uploaded_files)
-                        for i, f in enumerate(uploaded_files):
-                            try:
-                                be.save_screenshot(market_shot_id, i, f.read())
-                            except Exception as ex:
-                                st.warning(f"相場スクショ保存に失敗({f.name}): {ex}")
-                    # 商品画像(①③): shot_id "ts::item" idx0=全体, idx1..=ポイント
-                    item_shot_id = _ts_iso + "::item"
-                    item_count = 0
                     try:
-                        be.save_screenshot(item_shot_id, 0, overall_file.read())
-                        item_count += 1
-                        for j, pf in enumerate(point_files or [], start=1):
-                            be.save_screenshot(item_shot_id, j, pf.read())
+                        if uploaded_files:
+                            market_count = len(uploaded_files)
+                            for i, f in enumerate(uploaded_files):
+                                try:
+                                    be.save_screenshot(market_shot_id, i, f.read())
+                                except Exception as ex:
+                                    st.warning(f"相場スクショ保存に失敗({f.name}): {ex}")
+                        # 商品画像(①③): shot_id "ts::item" idx0=全体, idx1..=ポイント
+                        item_shot_id = _ts_iso + "::item"
+                        item_count = 0
+                        try:
+                            be.save_screenshot(item_shot_id, 0, overall_file.read())
                             item_count += 1
-                    except Exception as ex:
-                        st.warning(f"商品画像の保存に失敗: {ex}")
+                            for j, pf in enumerate(point_files or [], start=1):
+                                be.save_screenshot(item_shot_id, j, pf.read())
+                                item_count += 1
+                        except Exception as ex:
+                            st.warning(f"商品画像の保存に失敗: {ex}")
 
-                    append_training({
-                        "timestamp": _ts_iso,
-                        "staff": snap.get("staff", ""),
-                        "brand_ja": snap.get("brand_ja", ""),
-                        "brand_en": snap.get("brand_en", ""),
-                        "category": snap.get("category", ""),
-                        "product_name": snap.get("product_name", ""),
-                        "year": snap.get("year", ""),
-                        "accessories": snap.get("accessories", ""),
-                        "rank": snap.get("rank", ""),
-                        "price_min_usd": snap.get("price_min") if snap.get("price_min", 0) else "",
-                        "price_max_usd": snap.get("price_max") if snap.get("price_max", 0) else "",
-                        "image_count": item_count,
-                        "staff_offer_price": staff_offer,
-                        "screenshot_ids": f"{market_shot_id}|{item_shot_id}",
-                        "review_status": "pending",
-                        "submitted_at": _ts_iso,
-                        "eval_input": "", "eval_market_image": "", "eval_rank": "",
-                        "expert_answer_min": "", "expert_answer_max": "",
-                        "expert_answer_price": "", "price_gap": "",
-                        "overall_mark": "", "eval_comment": "", "reviewed_at": "",
-                    })
+                        append_training({
+                            "timestamp": _ts_iso,
+                            "staff": snap.get("staff", ""),
+                            "brand_ja": snap.get("brand_ja", ""),
+                            "brand_en": snap.get("brand_en", ""),
+                            "category": snap.get("category", ""),
+                            "product_name": snap.get("product_name", ""),
+                            "year": snap.get("year", ""),
+                            "accessories": snap.get("accessories", ""),
+                            "rank": snap.get("rank", ""),
+                            "price_min_usd": snap.get("price_min") if snap.get("price_min", 0) else "",
+                            "price_max_usd": snap.get("price_max") if snap.get("price_max", 0) else "",
+                            "image_count": item_count,
+                            "staff_offer_price": staff_offer,
+                            "staff_note": str(staff_note).strip(),
+                            "screenshot_ids": f"{market_shot_id}|{item_shot_id}",
+                            "review_status": "pending",
+                            "submitted_at": _ts_iso,
+                            "eval_input": "", "eval_market_image": "", "eval_rank": "",
+                            "expert_answer_min": "", "expert_answer_max": "",
+                            "expert_answer_price": "", "price_gap": "",
+                            "overall_mark": "", "eval_comment": "", "reviewed_at": "",
+                        })
+                        # 成功時のみ「直前に送った内容」を記録(同一内容の再送をブロック)
+                        st.session_state["t_last_sig"] = _dup_sig
+                    finally:
+                        # 成否にかかわらずロックは必ず解除する
+                        st.session_state["t_submitting"] = False
                     # admin へ提出通知(#鑑定士勉強部屋)。失敗しても提出は成功扱い。
                     try:
                         _sub_brand = snap.get("brand_ja", "") or snap.get("brand_en", "")
