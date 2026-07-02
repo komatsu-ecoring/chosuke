@@ -3679,6 +3679,11 @@ def _training_my_results():
                 st.markdown("**🦉 " + t("ui.training_review.comment") + "**")
                 st.info(comment)
 
+            # v0.15: 裕平さんが参考にした相場データ画像(あれば表示)
+            _exp_ids = str(row.get("expert_screenshot_ids", "") or "").strip()
+            _show_shot_group(_exp_ids, "📈 " + t("ui.training_review.ref_images"),
+                             key_prefix=f"my_expertref_{_row_ts}", point_label_overall=False)
+
 
 def _tk(base: str) -> str:
     """トレーニング入力ウィジェットのキー(査定モードと衝突しない専用 nonce 付き)。"""
@@ -3942,6 +3947,20 @@ def training_review_mode():
             t("ui.training_review.comment"), height=100,
             placeholder=t("ui.training.comment_placeholder"))
 
+        # v0.15: 裕平さんが「自分ならどの相場データを参考にしたか」の画像を添付できる。
+        #   staff は My Results で見返せる(=裕平さんの参照ソースがそのまま教材になる)。
+        expert_ref_files = st.file_uploader(
+            t("ui.training_review.ref_images"),
+            type=["png", "jpg", "jpeg", "webp"],
+            accept_multiple_files=True,
+            key=f"tr_ref_{target_idx}",
+            help=t("ui.training_review.ref_images_help"))
+        if expert_ref_files:
+            _rc = st.columns(min(len(expert_ref_files), 4))
+            for _i, _rf in enumerate(expert_ref_files):
+                with _rc[_i % len(_rc)]:
+                    st.image(_rf, width=110, caption=f"📈 {_i+1}")
+
         col_b1, col_b2 = st.columns(2)
         with col_b1:
             save_btn = st.form_submit_button(t("ui.training_review.save"), type="primary", use_container_width=True)
@@ -3986,7 +4005,20 @@ def training_review_mode():
             df.at[target_idx, "overall_mark"] = _MARKS[mark_label]
             df.at[target_idx, "eval_comment"] = eval_comment
             df.at[target_idx, "review_status"] = "reviewed"
-            df.at[target_idx, "reviewed_at"] = datetime.now().isoformat(timespec="seconds")
+            _reviewed_iso = datetime.now().isoformat(timespec="seconds")
+            df.at[target_idx, "reviewed_at"] = _reviewed_iso
+
+            # v0.15: 裕平さんが参考にした相場データ画像を保存(screenshots タブに Base64)。
+            #   shot_id は "reviewed_at::expert"。失敗しても評価保存自体は続行する。
+            _expert_shot_id = ""
+            if expert_ref_files:
+                _expert_shot_id = _reviewed_iso + "::expert"
+                for _i, _rf in enumerate(expert_ref_files):
+                    try:
+                        be.save_screenshot(_expert_shot_id, _i, _rf.read())
+                    except Exception as _ex:
+                        st.warning(f"相場データ画像の保存に失敗({getattr(_rf, 'name', _i)}): {_ex}")
+            df.at[target_idx, "expert_screenshot_ids"] = _expert_shot_id
             be.write_sheet("training_history", df)
 
             # v0.14.0: 評価された staff 本人に Slack DM 通知(失敗しても保存は成功扱い)

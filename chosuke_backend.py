@@ -84,7 +84,6 @@ SHEET_SCHEMAS = {
         "accessories", "rank", "price_min_usd", "price_max_usd",
         "image_count",            # アップした画像枚数(全体1+査定ポイント最大5)
         "staff_offer_price",      # staff が出した自分の買取金額(本格版の肝)
-        "staff_note",             # v0.15: staff の最終所見(自由記述・1文字以上で提出可)
         "screenshot_ids",         # 画像の shot_id(=timestamp)。screenshots タブ参照キー
         # --- 提出ステータス ---
         "review_status",          # pending / reviewed / skipped
@@ -99,6 +98,7 @@ SHEET_SCHEMAS = {
         "price_gap",              # staff_offer がレンジ外なら外れ幅、レンジ内なら0(自動計算)
         "overall_mark",           # 総合評価マーク: hanamaru / yoku / ganbaro
         "eval_comment",           # フィードバックコメント(自由記述)
+        "expert_screenshot_ids",  # v0.15: 裕平さんが参考にした相場データ画像の shot_id
         "reviewed_at",
     ],
 }
