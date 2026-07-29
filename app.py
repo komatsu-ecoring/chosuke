@@ -2433,6 +2433,7 @@ def appraisal_mode():
             "yuhei_comment": "",
             "review_status": "pending",
             "reviewed_at": "",
+            "reviewed_by": "",
             "tags": "",
             # スクショは screenshots タブに timestamp(_ts_iso)で紐付けて保存済み。
             "screenshot_ids": _ts_iso if screenshots_count > 0 else "",
@@ -2629,7 +2630,12 @@ def appraisal_mode():
 # ============================================================
 def knowledge_mode():
     st.markdown("## 📚 ナレッジ管理モード")
-    st.caption("管理者(裕平さん)がChosukeの知識を編集・蓄積する画面です。")
+    st.caption("管理者がChosukeの知識を編集・蓄積する画面です。トレーナーは閲覧のみできます。")
+
+    # v0.15: トレーナーは閲覧のみ(原価率など買取価格に直結する値を保護する)。
+    _can_edit = is_admin_role()
+    if not _can_edit:
+        st.info(t("ui.knowledge.readonly"))
 
     tab1, tab2, tab3, tab4 = st.tabs([
         "🏷️ ブランドマスタ",
@@ -2652,7 +2658,8 @@ def knowledge_mode():
         df = load_brands()
         edited = st.data_editor(
             df,
-            num_rows="dynamic",
+            num_rows="dynamic" if _can_edit else "fixed",
+            disabled=not _can_edit,
             use_container_width=True,
             column_config={
                 "brand_ja": st.column_config.TextColumn("ブランド(日本語)", required=True),
@@ -2673,7 +2680,7 @@ def knowledge_mode():
             key="brands_editor"
         )
 
-        if st.button("💾 ブランドマスタを保存", type="primary"):
+        if _can_edit and st.button("💾 ブランドマスタを保存", type="primary"):
             save_brands(edited)
             st.success("保存しました。")
             st.rerun()
@@ -2685,7 +2692,8 @@ def knowledge_mode():
         df = load_checklists()
         edited = st.data_editor(
             df,
-            num_rows="dynamic",
+            num_rows="dynamic" if _can_edit else "fixed",
+            disabled=not _can_edit,
             use_container_width=True,
             column_config={
                 "brand_ja": st.column_config.TextColumn("ブランド(日本語)", required=True),
@@ -2699,7 +2707,7 @@ def knowledge_mode():
             key="checks_editor"
         )
 
-        if st.button("💾 チェックリストを保存", type="primary"):
+        if _can_edit and st.button("💾 チェックリストを保存", type="primary"):
             save_checklists(edited)
             st.success("保存しました。")
             st.rerun()
@@ -2725,11 +2733,14 @@ def knowledge_mode():
                     "content": st.column_config.TextColumn("内容", width="large", disabled=True),
                     "promoted": st.column_config.CheckboxColumn("正式化"),
                 },
+                disabled=not _can_edit,
                 key="feedback_editor"
             )
 
-            if st.button("💾 正式化状態を保存", type="primary"):
-                edited.to_csv(feedback_csv(), index=False, encoding="utf-8-sig")
+            # v0.15 修正: クラウド版はローカルCSVが揮発するため保存されなかった。
+            #   他のタブと同様にスプレッドシート(feedback タブ)へ書き込む。
+            if _can_edit and st.button("💾 正式化状態を保存", type="primary"):
+                be.write_sheet("feedback", edited)
                 st.success("保存しました。")
                 st.rerun()
 
@@ -2749,14 +2760,19 @@ def knowledge_mode():
 
 
 # ============================================================
-# 画面: 査定レビューモード(裕平さん専用)
+# 画面: 査定レビューモード(管理者 / トレーナー)
 # ============================================================
 def review_mode():
     st.markdown("## 📝 査定レビューモード")
     st.caption(
-        "staffが行った査定について、裕平さんが「実際の原価率」と「コメント」を残す画面です。"
+        "staffが行った査定について、管理者・トレーナーが「実際の原価率」と「コメント」を残す画面です。"
         "ここで蓄積したデータが、次回以降のChosukeの推奨値の精度を上げます。"
     )
+
+    # v0.15: レビュアー未選択なら保存させない(誰がレビューしたか必ず記録に残すため)。
+    if not current_reviewer():
+        st.warning(t("ui.review.need_reviewer"))
+        return
 
     df = load_history()
     if df.empty:
@@ -2767,6 +2783,10 @@ def review_mode():
     if "review_status" not in df.columns:
         df["review_status"] = "pending"
     df["review_status"] = df["review_status"].fillna("pending")
+
+    # v0.15: reviewed_by 列がない既存シート対応(自動追加。既存データは空欄のまま)
+    if "reviewed_by" not in df.columns:
+        df["reviewed_by"] = ""
 
     pending = df[df["review_status"] == "pending"].copy()
     reviewed = df[df["review_status"] == "reviewed"].copy()
@@ -2912,9 +2932,9 @@ def review_mode():
             if rng["ratio"]:
                 rtxt += f"({rng['ratio']}倍)"
             st.markdown(f"**金額の幅の絞り込み**: {rtxt}")
-        st.caption("※あくまで参考値。最終判断は裕平さん。現場には表示されません。")
+        st.caption("※あくまで参考値。最終判断はレビュアー。現場には表示されません。")
 
-    st.markdown("##### 🦉 裕平さんの実査定結果")
+    st.markdown("##### 🦉 レビュアーの実査定結果")
 
     with st.form(f"review_form_{target_idx}"):
         actual_rate = st.number_input(
@@ -2944,6 +2964,7 @@ def review_mode():
             df.at[target_idx, "tags"] = tags
             df.at[target_idx, "review_status"] = "reviewed"
             df.at[target_idx, "reviewed_at"] = datetime.now().isoformat(timespec="seconds")
+            df.at[target_idx, "reviewed_by"] = current_reviewer()
             be.write_sheet("appraisal_history", df)
             st.success("レビュー保存しました。")
             st.rerun()
@@ -2951,6 +2972,7 @@ def review_mode():
         if skip_btn:
             df.at[target_idx, "review_status"] = "skipped"
             df.at[target_idx, "reviewed_at"] = datetime.now().isoformat(timespec="seconds")
+            df.at[target_idx, "reviewed_by"] = current_reviewer()
             be.write_sheet("appraisal_history", df)
             st.info(t("ui.training_review.skipped"))
             st.rerun()
@@ -3558,6 +3580,7 @@ def _training_submit_panel():
                         "expert_answer_min": "", "expert_answer_max": "",
                         "expert_answer_price": "", "price_gap": "",
                         "overall_mark": "", "eval_comment": "", "reviewed_at": "",
+                        "reviewed_by": "",
                     })
                     # admin へ提出通知(#鑑定士勉強部屋)。失敗しても提出は成功扱い。
                     try:
@@ -3576,7 +3599,7 @@ def _training_submit_panel():
                     except Exception:
                         pass
                     st.session_state["t_submitted_done"] = True
-                    st.toast("✅ 提出しました!裕平さんの評価を待ちましょう。")
+                    st.toast("✅ 提出しました!評価を待ちましょう。")
                     st.rerun()
 
 
@@ -3679,7 +3702,7 @@ def _training_my_results():
                 st.markdown("**🦉 " + t("ui.training_review.comment") + "**")
                 st.info(comment)
 
-            # v0.15: 裕平さんが参考にした相場データ画像(あれば表示)
+            # v0.15: レビュアーが参考にした相場データ画像(あれば表示)
             _exp_ids = str(row.get("expert_screenshot_ids", "") or "").strip()
             _show_shot_group(_exp_ids, "📈 " + t("ui.training_review.ref_images"),
                              key_prefix=f"my_expertref_{_row_ts}", point_label_overall=False)
@@ -3737,6 +3760,11 @@ def training_review_mode():
     st.markdown("## 🎓 " + t("ui.mode.training_review"))
     st.caption(t("ui.training_review.caption"))
 
+    # v0.15: レビュアー未選択なら評価させない(誰が評価したか必ず記録に残すため)。
+    if not current_reviewer():
+        st.warning(t("ui.review.need_reviewer"))
+        return
+
     # --- 直近の Slack 通知結果(rerun でも消えないよう常時表示) ---
     _lsr = st.session_state.get("last_slack_result")
     if _lsr:
@@ -3768,6 +3796,10 @@ def training_review_mode():
     if "review_status" not in df.columns:
         df["review_status"] = "pending"
     df["review_status"] = df["review_status"].fillna("pending")
+
+    # v0.15: reviewed_by 列がない既存シート対応(自動追加。既存データは空欄のまま)
+    if "reviewed_by" not in df.columns:
+        df["reviewed_by"] = ""
 
     pending = df[df["review_status"] == "pending"].copy()
     reviewed = df[df["review_status"] == "reviewed"].copy()
@@ -3947,8 +3979,8 @@ def training_review_mode():
             t("ui.training_review.comment"), height=100,
             placeholder=t("ui.training.comment_placeholder"))
 
-        # v0.15: 裕平さんが「自分ならどの相場データを参考にしたか」の画像を添付できる。
-        #   staff は My Results で見返せる(=裕平さんの参照ソースがそのまま教材になる)。
+        # v0.15: レビュアーが「自分ならどの相場データを参考にしたか」の画像を添付できる。
+        #   staff は My Results で見返せる(=レビュアーの参照ソースがそのまま教材になる)。
         expert_ref_files = st.file_uploader(
             t("ui.training_review.ref_images"),
             type=["png", "jpg", "jpeg", "webp"],
@@ -4007,8 +4039,9 @@ def training_review_mode():
             df.at[target_idx, "review_status"] = "reviewed"
             _reviewed_iso = datetime.now().isoformat(timespec="seconds")
             df.at[target_idx, "reviewed_at"] = _reviewed_iso
+            df.at[target_idx, "reviewed_by"] = current_reviewer()
 
-            # v0.15: 裕平さんが参考にした相場データ画像を保存(screenshots タブに Base64)。
+            # v0.15: レビュアーが参考にした相場データ画像を保存(screenshots タブに Base64)。
             #   shot_id は "reviewed_at::expert"。失敗しても評価保存自体は続行する。
             _expert_shot_id = ""
             if expert_ref_files:
@@ -4050,6 +4083,8 @@ def training_review_mode():
                 _dm += f"• Cost rate / អត្រាតម្លៃដើម: {_cost_rate_str}\n"
             if (eval_comment or "").strip():
                 _dm += f"• Comment / មតិ: {eval_comment.strip()}\n"
+            # v0.15: 誰が評価したかを本人にも明示する
+            _dm += f"• Reviewed by / អ្នកពិនិត្យ: {current_reviewer()}\n"
             _dm += "\nOpen Chosuke → *My Results / លទ្ធផលរបស់ខ្ញុំ* to see details."
             _dm += _chosuke_link_line()
 
@@ -4068,6 +4103,7 @@ def training_review_mode():
         if skip_btn:
             df.at[target_idx, "review_status"] = "skipped"
             df.at[target_idx, "reviewed_at"] = datetime.now().isoformat(timespec="seconds")
+            df.at[target_idx, "reviewed_by"] = current_reviewer()
             be.write_sheet("training_history", df)
             st.info(t("ui.training_review.skipped"))
             st.rerun()
@@ -4156,10 +4192,13 @@ def settings_mode():
 # ログインゲート(2区分: staff / 管理者)
 # ============================================================
 def _check_password(role: str, entered: str) -> bool:
-    """Secrets のパスワードと照合する。"""
+    """Secrets のパスワードと照合する。
+    v0.15: trainer(トレーナー)区分を追加。3区分それぞれ別パスワード。"""
     try:
         if role == "staff":
             return entered == st.secrets["staff_password"]
+        if role == "trainer":
+            return entered == st.secrets["trainer_password"]
         if role == "admin":
             return entered == st.secrets["admin_password"]
     except Exception:
@@ -4167,25 +4206,55 @@ def _check_password(role: str, entered: str) -> bool:
     return False
 
 
+# --- v0.15: ロール判定ヘルパー(3区分) -------------------------------
+def _role_label(role: str) -> str:
+    """ロールの表示名を返す。"""
+    if role == "admin":
+        return t("ui.login.status_admin")
+    if role == "trainer":
+        return t("ui.login.status_trainer")
+    return t("ui.login.status_staff")
+
+
+def can_review() -> bool:
+    """レビュー系モードを使えるロールか(管理者 / トレーナー)。"""
+    return st.session_state.get("role") in ("admin", "trainer")
+
+
+def is_admin_role() -> bool:
+    """設定・ナレッジ編集ができるロールか(管理者のみ)。"""
+    return st.session_state.get("role") == "admin"
+
+
+def current_reviewer() -> str:
+    """サイドバーで選択中のレビュアー名。未選択なら空文字。"""
+    return str(st.session_state.get("reviewer_name", "") or "").strip()
+
+
 def login_gate() -> bool:
     """未ログインならログイン画面を出し、False を返す。
-    ログイン済みなら True。staff / admin の2区分。英語併記。"""
+    ログイン済みなら True。staff / trainer / admin の3区分。英語併記。
+    v0.15: トレーナー区分を追加(レビュー可・設定不可)。"""
     if st.session_state.get("authed"):
         return True
 
     render_header()
 
-    # 区分選択(まだ選んでいなければ2ボタンを出す)
+    # 区分選択(まだ選んでいなければ3ボタンを出す)
     chosen = st.session_state.get("login_role_choice")
     if not chosen:
         st.markdown(t("ui.login.header"))
         st.caption(t("ui.login.select"))
-        c1, c2 = st.columns(2)
+        c1, c2, c3 = st.columns(3)
         with c1:
             if st.button(t("ui.login.staff"), use_container_width=True):
                 st.session_state["login_role_choice"] = "staff"
                 st.rerun()
         with c2:
+            if st.button(t("ui.login.trainer"), use_container_width=True):
+                st.session_state["login_role_choice"] = "trainer"
+                st.rerun()
+        with c3:
             if st.button(t("ui.login.admin"), use_container_width=True):
                 st.session_state["login_role_choice"] = "admin"
                 st.rerun()
@@ -4193,7 +4262,7 @@ def login_gate() -> bool:
 
     # パスワード入力
     role = chosen
-    role_label = t("ui.login.status_staff") if role == "staff" else t("ui.login.status_admin")
+    role_label = _role_label(role)
     st.markdown(f"#### {role_label} " + t("ui.login.button"))
     pw = st.text_input(t("ui.login.password"), type="password", key="login_pw")
     c1, c2 = st.columns([1, 1])
@@ -4235,12 +4304,18 @@ def main():
 
     role = st.session_state.get("role", "staff")
     is_admin = role == "admin"
+    is_trainer = role == "trainer"
 
-    # ロール別に使えるモードを決める。
-    # staff: 査定モードのみ。 admin: 全モード。
+    # ロール別に使えるモードを決める(v0.15: 3区分)。
+    #   staff   : 査定 + トレーニング
+    #   trainer : 査定 + レビュー + トレーニング評価 + ナレッジ(閲覧のみ)。設定は不可。
+    #   admin   : 全モード。
     if is_admin:
         mode_keys = ["🔍 査定モード", "📝 査定レビューモード", "🎓 トレーニング評価モード",
                      "📚 ナレッジ管理モード", "⚙️ 設定"]
+    elif is_trainer:
+        mode_keys = ["🔍 査定モード", "📝 査定レビューモード", "🎓 トレーニング評価モード",
+                     "📚 ナレッジ管理モード"]
     else:
         mode_keys = ["🔍 査定モード", "🎓 トレーニングモード"]
 
@@ -4262,21 +4337,38 @@ def main():
             "📚 ナレッジ管理モード": "📚",
             "⚙️ 設定": "⚙️",
         }
-        if is_admin:
-            mode = st.radio(
-                "操作モード",
-                mode_keys,
-                format_func=lambda v: f"{_MODE_EMOJI.get(v,'')} {t(_MODE_LABEL.get(v, v))}".strip(),
-                label_visibility="collapsed"
+        # v0.15: ロールごとの分岐は mode_keys で済むため、radio 呼び出しは1つに統合。
+        mode = st.radio(
+            "操作モード",
+            mode_keys,
+            format_func=lambda v: f"{_MODE_EMOJI.get(v,'')} {t(_MODE_LABEL.get(v, v))}".strip(),
+            label_visibility="collapsed"
+        )
+
+        # --- v0.15: レビュアー名の選択(管理者 / トレーナーのみ) ---
+        #   パスワードはロール共有のため、ログインだけでは「誰が」レビューしたか分からない。
+        #   ここで選んだ名前を reviewed_by として履歴に記録する。
+        #   選択肢は staff_master(名簿)から取るので、表記ゆれが起きない。
+        if is_admin or is_trainer:
+            st.markdown("---")
+            _reviewer_options = load_staff_master()
+            _cur_reviewer = st.session_state.get("reviewer_name", "")
+            _rv_index = (
+                _reviewer_options.index(_cur_reviewer)
+                if _cur_reviewer in _reviewer_options else None
             )
-        else:
-            # staff: 査定モード + トレーニングモードから選択
-            mode = st.radio(
-                "操作モード",
-                mode_keys,
-                format_func=lambda v: f"{_MODE_EMOJI.get(v,'')} {t(_MODE_LABEL.get(v, v))}".strip(),
-                label_visibility="collapsed"
+            # キーに auth_nonce を含めることで、ログアウト時に選択が確実にリセットされる
+            # (前の人の名前が残ったまま次の人がレビューするのを防ぐ)。
+            _reviewer = st.selectbox(
+                t("ui.sidebar.reviewer"),
+                _reviewer_options,
+                index=_rv_index,
+                placeholder=t("ui.sidebar.reviewer_placeholder"),
+                key=f"reviewer_select_{st.session_state.get('auth_nonce', 0)}",
             )
+            st.session_state["reviewer_name"] = _reviewer or ""
+            if not st.session_state["reviewer_name"]:
+                st.caption("⚠️ " + t("ui.sidebar.reviewer_placeholder"))
 
         st.markdown("---")
         lang_label = {"ja": "🇯🇵 日本語", "en": "🇬🇧 English", "km": "🇰🇭 ភាសាខ្មែរ"}
@@ -4298,11 +4390,12 @@ def main():
             st.caption(t("ui.sidebar.partial_translation"))
 
         st.markdown("---")
-        _role_disp = t("ui.login.status_admin") if is_admin else t("ui.login.status_staff")
+        _role_disp = _role_label(role)
         st.caption(t("ui.sidebar.logged_in", role=_role_disp))
         if st.button(t("ui.logout"), use_container_width=True):
-            for k in ["authed", "role", "login_role_choice"]:
+            for k in ["authed", "role", "login_role_choice", "reviewer_name"]:
                 st.session_state.pop(k, None)
+            st.session_state["auth_nonce"] = st.session_state.get("auth_nonce", 0) + 1
             st.rerun()
 
         st.markdown("---")
