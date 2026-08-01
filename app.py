@@ -4109,6 +4109,190 @@ def training_review_mode():
             st.rerun()
 
 
+def training_stats_mode():
+    """📊 成績モード(管理者 / トレーナー)。
+    training_history の評価済データを staff 別・月別に集計して表示する。
+    育成チェックシートに転記する数字をここから読む。手で数えないための画面。
+    """
+    st.markdown("## 📊 成績 / Training Stats")
+    st.caption("評価済の提出を staff 別・月別に集計します。育成チェックシートへの転記はここから。")
+
+    df = load_training()
+    if df.empty:
+        st.info("まだ提出がありません。/ No submissions yet.")
+        return
+
+    for col in ["review_status", "overall_mark", "staff", "timestamp",
+                "price_gap", "eval_input", "eval_market_image", "eval_rank"]:
+        if col not in df.columns:
+            df[col] = ""
+    df["review_status"] = df["review_status"].fillna("pending")
+
+    done = df[df["review_status"] == "reviewed"].copy()
+    if done.empty:
+        st.info("まだ評価済の提出がありません。/ No reviewed submissions yet.")
+        return
+
+    # --- 前処理 ---
+    done["staff"] = done["staff"].fillna("").astype(str).str.strip()
+    done["_ts"] = pd.to_datetime(done["timestamp"], errors="coerce")
+    done = done[done["_ts"].notna()]
+    if done.empty:
+        st.info("日付を読み取れる提出がありません。/ No submissions with a readable date.")
+        return
+    done["_month"] = done["_ts"].dt.strftime("%Y-%m")
+    done["_gap"] = pd.to_numeric(done["price_gap"], errors="coerce")
+
+    MARK_DISP = {
+        "hanamaru": t("ui.training_review.mark.hanamaru"),
+        "yoku": t("ui.training_review.mark.yoku"),
+        "ganbaro": t("ui.training_review.mark.ganbaro"),
+    }
+
+    # --- 絞り込み ---
+    c1, c2 = st.columns(2)
+    with c1:
+        staff_list = sorted({s for s in done["staff"].tolist() if s})
+        sel_staff = st.selectbox("👤 staff", ["全員 / All"] + staff_list, key="stats_staff")
+    with c2:
+        months = sorted(done["_month"].unique().tolist(), reverse=True)
+        sel_month = st.selectbox("🗓 期間 / Period", ["全期間 / All"] + months, key="stats_month")
+
+    view = done.copy()
+    if sel_staff != "全員 / All":
+        view = view[view["staff"] == sel_staff]
+    if sel_month != "全期間 / All":
+        view = view[view["_month"] == sel_month]
+    if view.empty:
+        st.info("該当する提出がありません。/ No submissions match this filter.")
+        return
+
+    def _counts(frame):
+        n = len(frame)
+        h = int((frame["overall_mark"] == "hanamaru").sum())
+        y = int((frame["overall_mark"] == "yoku").sum())
+        g = int((frame["overall_mark"] == "ganbaro").sum())
+        inr = int((frame["_gap"] == 0).sum())
+        return n, h, y, g, inr
+
+    n, h, y, g, inr = _counts(view)
+
+    # --- サマリー ---
+    st.markdown("### サマリー / Summary")
+    m = st.columns(5)
+    m[0].metric("提出件数 / Submissions", n)
+    m[1].metric(MARK_DISP["hanamaru"], h, f"{h / n * 100:.0f}%" if n else "0%")
+    m[2].metric(MARK_DISP["yoku"], y, f"{y / n * 100:.0f}%" if n else "0%")
+    m[3].metric(MARK_DISP["ganbaro"], g, f"{g / n * 100:.0f}%" if n else "0%")
+    m[4].metric("買取金額レンジ内 / Within range", inr, f"{inr / n * 100:.0f}%" if n else "0%")
+    st.caption("「レンジ内」= 提出した買取金額が正解レンジに収まっていた件数(price_gap = 0)。"
+               "評価者の主観が入らない客観指標です。")
+
+    # --- 月次推移 ---
+    st.markdown("### 月次推移 / Monthly trend")
+    rows = []
+    for mth in sorted(view["_month"].unique()):
+        sub = view[view["_month"] == mth]
+        n2, h2, y2, g2, in2 = _counts(sub)
+        rows.append({
+            "月 / Month": mth,
+            "提出 / Sub.": n2,
+            MARK_DISP["hanamaru"]: h2,
+            MARK_DISP["yoku"]: y2,
+            MARK_DISP["ganbaro"]: g2,
+            "💮率 / Rate": f"{h2 / n2 * 100:.0f}%" if n2 else "-",
+            "レンジ内 / In range": in2,
+            "レンジ内率 / Rate": f"{in2 / n2 * 100:.0f}%" if n2 else "-",
+        })
+    trend = pd.DataFrame(rows)
+    st.dataframe(trend, use_container_width=True, hide_index=True)
+
+    # --- 4軸の「適切」率 ---
+    st.markdown("### 4軸の評価 / Four evaluation axes")
+    AXES = [
+        ("eval_input", "① 商品入力 / Item input"),
+        ("eval_market_image", "② 相場参考画像 / Market evidence"),
+        ("eval_rank", "③ Rank"),
+    ]
+    ax_rows = []
+    for col, label in AXES:
+        s = view[col].fillna("").astype(str)
+        ok = int((s == "適切").sum())
+        mid = int((s == "少し改善").sum())
+        ng = int((s == "要改善").sum())
+        tot = ok + mid + ng
+        ax_rows.append({
+            "軸 / Axis": label,
+            "適切 / Good": ok,
+            "少し改善 / Minor": mid,
+            "要改善 / Needs work": ng,
+            "適切率 / Rate": f"{ok / tot * 100:.0f}%" if tot else "-",
+        })
+    ax_rows.append({
+        "軸 / Axis": "④ 買取金額 / Purchase price",
+        "適切 / Good": inr,
+        "少し改善 / Minor": "-",
+        "要改善 / Needs work": int((view["_gap"] != 0).sum()),
+        "適切率 / Rate": f"{inr / n * 100:.0f}%" if n else "-",
+    })
+    st.dataframe(pd.DataFrame(ax_rows), use_container_width=True, hide_index=True)
+
+    # --- 金額のズレ傾向 ---
+    st.markdown("### 買取金額のズレ傾向 / Pricing tendency")
+    gaps = view["_gap"].dropna()
+    if gaps.empty:
+        st.caption("金額のズレを計算できる提出がまだありません。")
+    else:
+        low = int((gaps < 0).sum())
+        high = int((gaps > 0).sum())
+        g1, g2, g3, g4 = st.columns(4)
+        g1.metric("レンジ内 / In range", int((gaps == 0).sum()))
+        g2.metric("安く見積もり / Under", low)
+        g3.metric("高く見積もり / Over", high)
+        g4.metric("平均ズレ / Avg gap", f"${gaps.mean():.0f}")
+        if low > high * 2 and low >= 3:
+            st.info("🔻 安く見積もる傾向があります。相場の上限を取りに行けているか確認してください。")
+        elif high > low * 2 and high >= 3:
+            st.warning("🔺 高く見積もる傾向があります。原価率と回転を意識させてください。")
+
+    # --- staff別ランキング(全員選択時のみ) ---
+    if sel_staff == "全員 / All":
+        st.markdown("### staff 別 / By staff")
+        srows = []
+        for name in sorted({s for s in view["staff"].tolist() if s}):
+            sub = view[view["staff"] == name]
+            n3, h3, y3, g3_, in3 = _counts(sub)
+            srows.append({
+                "staff": name,
+                "提出 / Sub.": n3,
+                MARK_DISP["hanamaru"]: h3,
+                MARK_DISP["yoku"]: y3,
+                MARK_DISP["ganbaro"]: g3_,
+                "💮率 / Rate": f"{h3 / n3 * 100:.0f}%" if n3 else "-",
+                "レンジ内率 / In range": f"{in3 / n3 * 100:.0f}%" if n3 else "-",
+            })
+        st.dataframe(pd.DataFrame(srows), use_container_width=True, hide_index=True)
+        st.caption("※ 件数の少ない人は率が振れます。提出件数と併せて見てください。")
+
+    # --- 明細(総合評価を日本語表示に変換) ---
+    with st.expander(f"📋 明細を見る({len(view)}件) / Detail"):
+        det = view.copy()
+        det["総合評価 / Mark"] = det["overall_mark"].map(MARK_DISP).fillna("")
+        det["日付 / Date"] = det["_ts"].dt.strftime("%Y-%m-%d")
+        cols = [c for c in ["日付 / Date", "staff", "brand_ja", "product_name",
+                            "staff_offer_price", "expert_answer_min", "expert_answer_max",
+                            "price_gap", "総合評価 / Mark", "eval_input", "eval_market_image",
+                            "eval_rank", "eval_comment", "reviewed_by"] if c in det.columns]
+        det = det.sort_values("_ts", ascending=False)
+        st.dataframe(det[cols], use_container_width=True, hide_index=True)
+        st.download_button(
+            "⬇️ CSVをダウンロード / Download CSV",
+            det[cols].to_csv(index=False).encode("utf-8-sig"),
+            file_name=f"chosuke_stats_{sel_staff}_{sel_month}.csv".replace("/", "-").replace(" ", ""),
+            mime="text/csv",
+        )
+
+
 def settings_mode():
     st.markdown("## ⚙️ " + t("ui.mode.settings"))
 
@@ -4312,10 +4496,10 @@ def main():
     #   admin   : 全モード。
     if is_admin:
         mode_keys = ["🔍 査定モード", "📝 査定レビューモード", "🎓 トレーニング評価モード",
-                     "📚 ナレッジ管理モード", "⚙️ 設定"]
+                     "📊 成績モード", "📚 ナレッジ管理モード", "⚙️ 設定"]
     elif is_trainer:
         mode_keys = ["🔍 査定モード", "📝 査定レビューモード", "🎓 トレーニング評価モード",
-                     "📚 ナレッジ管理モード"]
+                     "📊 成績モード", "📚 ナレッジ管理モード"]
     else:
         mode_keys = ["🔍 査定モード", "🎓 トレーニングモード"]
 
@@ -4326,6 +4510,7 @@ def main():
             "📝 査定レビューモード": "ui.mode.review",
             "🎓 トレーニングモード": "ui.mode.training",
             "🎓 トレーニング評価モード": "ui.mode.training_review",
+            "📊 成績モード": "ui.mode.stats",
             "📚 ナレッジ管理モード": "ui.mode.knowledge",
             "⚙️ 設定": "ui.mode.settings",
         }
@@ -4334,6 +4519,7 @@ def main():
             "📝 査定レビューモード": "📝",
             "🎓 トレーニングモード": "🎓",
             "🎓 トレーニング評価モード": "🎓",
+            "📊 成績モード": "📊",
             "📚 ナレッジ管理モード": "📚",
             "⚙️ 設定": "⚙️",
         }
@@ -4341,7 +4527,9 @@ def main():
         mode = st.radio(
             "操作モード",
             mode_keys,
-            format_func=lambda v: f"{_MODE_EMOJI.get(v,'')} {t(_MODE_LABEL.get(v, v))}".strip(),
+            format_func=lambda v: (
+                f"{_MODE_EMOJI.get(v,'')} {t(_MODE_LABEL.get(v, v)) or v.split(' ', 1)[-1]}".strip()
+            ),
             label_visibility="collapsed"
         )
 
@@ -4414,6 +4602,8 @@ def main():
         training_mode()
     elif mode == "🎓 トレーニング評価モード":
         training_review_mode()
+    elif mode == "📊 成績モード":
+        training_stats_mode()
     elif mode == "📚 ナレッジ管理モード":
         knowledge_mode()
     else:
