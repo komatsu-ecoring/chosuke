@@ -3877,6 +3877,48 @@ def training_review_mode():
             st.caption(f"{len(_done)}件")
             st.dataframe(_done[show_cols], use_container_width=True, hide_index=True)
 
+            # --- v0.16.1: 差し戻し(評価の取り消し) ---
+            # 書きかけで保存してしまった場合に、未評価へ戻して評価し直せるようにする。
+            # 消すのは評価内容だけで、staff の提出内容には一切触れない。
+            st.markdown("**↩️ 評価を差し戻す / Undo a review**")
+            st.caption("選んだ提出を「未評価」に戻します。staffの提出内容は消えません。"
+                       "既に送信された Slack 通知は取り消せないので、評価し直したあと再送されます。")
+            _undo_opts = {}
+            for _, _r in _done.head(30).iterrows():
+                _k = (f"{str(_r.get('timestamp',''))[:16].replace('T',' ')}｜"
+                      f"{_r.get('staff','')}｜{_r.get('brand_ja','')} {_r.get('product_name','')}")
+                _undo_opts[_k] = str(_r.get("timestamp", ""))
+            _undo_sel = st.selectbox("差し戻す提出", ["—"] + list(_undo_opts.keys()),
+                                     key="train_review_undo_sel")
+            _undo_ok = st.checkbox("差し戻すことを確認しました", key="train_review_undo_ok")
+            if st.button("↩️ 未評価に戻す", key="train_review_undo_btn",
+                         disabled=(_undo_sel == "—" or not _undo_ok)):
+                _uts = _undo_opts.get(_undo_sel, "")
+                _all = load_training()
+                _m = _all["timestamp"].astype(str) == _uts
+                if not _m.any():
+                    st.error("対象が見つかりませんでした。")
+                else:
+                    _idx = _all[_m].index[0]
+                    for _c, _v in [
+                        ("review_status", "pending"), ("reviewed_at", ""), ("reviewed_by", ""),
+                        ("overall_mark", ""), ("eval_comment", ""),
+                        ("eval_input", ""), ("eval_market_image", ""), ("eval_rank", ""),
+                        ("eval_price", ""),
+                        ("expert_answer_min", ""), ("expert_answer_max", ""),
+                        ("expert_market_min", ""), ("expert_market_max", ""),
+                        ("expert_cost_rate", ""), ("price_gap", ""),
+                        ("price_gap_rate", ""), ("gap_band", ""),
+                        ("expert_screenshot_ids", ""),
+                    ]:
+                        if _c in _all.columns:
+                            _all.at[_idx, _c] = _v
+                    be.write_sheet("training_history", _all)
+                    # 紐づくフィードバック項目も削除する(空リストで上書き)
+                    ft.save_items(record_ts=_uts, staff="", reviewer="", reviewed_at="", items=[])
+                    st.success(f"差し戻しました: {_undo_sel}　未評価一覧に戻っています。")
+                    st.rerun()
+
     st.markdown("---")
 
     if pending.empty:
@@ -4046,14 +4088,16 @@ def training_review_mode():
                     f"{_i}", _tag_labels, key=f"tr_fbtag_{target_idx}_{_i}",
                     label_visibility="visible" if _i == 1 else "collapsed")
             with _c2:
-                _txt = st.text_input(
-                    t("ui.fb.item_text"), key=f"tr_fbtxt_{target_idx}_{_i}",
+                # v0.16.1: text_input はフォーム内で Enter を押すと送信されてしまうため
+                #   text_area を使う(Enter は改行になる)。書きかけで保存が走る事故を防ぐ。
+                _txt = st.text_area(
+                    t("ui.fb.item_text"), key=f"tr_fbtxt_{target_idx}_{_i}", height=68,
                     label_visibility="visible" if _i == 1 else "collapsed",
                     placeholder=t("ui.fb.item_placeholder") if _i == 1 else "")
             _fb_inputs.append({"tag": _label_to_key.get(_sel, ""), "text": _txt})
 
-        _free_tag = st.text_input(
-            t("ui.fb.free_tag"), key=f"tr_fbfree_{target_idx}",
+        _free_tag = st.text_area(
+            t("ui.fb.free_tag"), key=f"tr_fbfree_{target_idx}", height=68,
             placeholder=t("ui.fb.free_tag_placeholder"),
             help=t("ui.fb.free_tag_help"))
 
