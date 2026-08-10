@@ -213,6 +213,7 @@ from datetime import datetime
 from pathlib import Path
 
 import chosuke_backend as be
+import feedback_tags as ft   # v0.16: フィードバックのタグ化・再発カウント・乖離率
 
 # ============================================================
 # 設定: データ保存先
@@ -1036,6 +1037,9 @@ def init_data():
 
     if be.read_sheet("checklists").empty:
         be.write_sheet("checklists", DEFAULT_CHECKLISTS)
+
+    # v0.16: フィードバック項目タブ(縦持ち)を保証する
+    ft.ensure_sheet()
 
     sm = be.read_sheet("staff_master")
     if sm.empty or "staff_name" not in sm.columns or sm["staff_name"].fillna("").str.strip().eq("").all():
@@ -3632,6 +3636,23 @@ def _training_my_results():
         return
 
     mine = mine.sort_values("timestamp", ascending=False)
+
+
+    # --- v0.16: 弱点サマリー(直近30提出のタグ集計) ---
+    # フィードバック本文を読み飛ばしても、どこが弱いかは棒グラフで伝わる。
+    _sum = ft.tag_counts(who, last_n_records=30)
+    if not _sum.empty:
+        with st.container(border=True):
+            st.markdown("**📌 " + t("ui.fb.weakness_header") + "**")
+            st.caption(t("ui.fb.weakness_help"))
+            _lang = st.session_state.get("lang", "ja")
+            _max = int(_sum["count"].max()) or 1
+            for _, _r in _sum.iterrows():
+                _n = int(_r["count"])
+                _bar = "█" * max(1, round(_n / _max * 14))
+                _lbl = _r["label_ja"] if _lang == "ja" else _r["label_en"]
+                st.markdown(f"`{_bar:<14}` **{_n}**　{_lbl}")
+
     _MARK_DISP = {
         "hanamaru": t("ui.training_review.mark.hanamaru"),
         "yoku": t("ui.training_review.mark.yoku"),
@@ -3697,15 +3718,31 @@ def _training_my_results():
                 f"- {t('ui.training_review.axis2')}: {_e(row.get('eval_market_image',''))}\n"
                 f"- {t('ui.training_review.axis3')}: {_e(row.get('eval_rank',''))}"
             )
+            # v0.16: 指摘をタグ付きで表示。3回目以降は印を付け、
+            #   文章を読み飛ばしても「何を繰り返し言われているか」が伝わるようにする。
+            _its = ft.items_for_record(str(row.get("timestamp", "") or ""))
+            if not _its.empty:
+                _lang = st.session_state.get("lang", "ja")
+                st.markdown("**🦉 " + t("ui.fb.items_header") + "**")
+                _my_staff = str(row.get("staff", "") or "")
+                for _, _it in _its.iterrows():
+                    _tg = str(_it.get("tag", "") or "")
+                    _lbl = ft.tag_label(_tg, _lang)
+                    _n = ft.recurrence(_my_staff, _tg) if _tg else 0
+                    _badge = f"　⚠️ ×{_n}" if _n >= 3 else ""
+                    _head = f"**{int(_it.get('seq', 0))}. [{_lbl}]**{_badge}" if _lbl else f"**{int(_it.get('seq', 0))}.**"
+                    st.markdown(f"{_head}  \n{_it.get('text_ja', '')}")
+
             comment = str(row.get("eval_comment", "") or "")
             if comment:
-                st.markdown("**🦉 " + t("ui.training_review.comment") + "**")
+                st.markdown("**🦉 " + t("ui.fb.overall_comment") + "**")
                 st.info(comment)
 
             # v0.15: レビュアーが参考にした相場データ画像(あれば表示)
             _exp_ids = str(row.get("expert_screenshot_ids", "") or "").strip()
             _show_shot_group(_exp_ids, "📈 " + t("ui.training_review.ref_images"),
                              key_prefix=f"my_expertref_{_row_ts}", point_label_overall=False)
+
 
 
 def _tk(base: str) -> str:
@@ -3922,6 +3959,24 @@ def training_review_mode():
         _show_shot_group(market_id, "📊 相場参考スクショ",
                          key_prefix=f"market_{target_idx}", point_label_overall=False)
 
+    # --- v0.16: この staff の過去タグ集計(再発の可視化) ---
+    # st.form の中ではウィジェット操作で再実行が起きないため、タグ選択に連動した
+    # 表示はできない。よってフォームの手前に「この staff に何を何回言ってきたか」を
+    # まとめて出す。3回目以降のタグは、もう一度書くのではなく別の手を打つ合図。
+    _rv_staff = str(target.get("staff", "") or "").strip()
+    _tc = ft.tag_counts(_rv_staff)
+    if not _tc.empty:
+        with st.container(border=True):
+            st.markdown("**🔁 " + t("ui.fb.recurrence_header", staff=_rv_staff) + "**")
+            _lines = []
+            for _, _r in _tc.iterrows():
+                _n = int(_r["count"])
+                _mk = "⚠️ " if _n >= 3 else ""
+                _lines.append(f"- {_mk}{_r['label_ja']} / {_r['label_en']} … **{_n}**")
+            st.markdown("\n".join(_lines))
+            if (_tc["count"] >= 3).any():
+                st.caption("⚠️ " + t("ui.fb.recurrence_hint"))
+
     # --- 4軸評価フォーム ---
     st.markdown(t("ui.training_review.expert_header"))
     # v0.13.1: 2択(適切/要改善)→ 3段階(適切 / 少し改善 / 要改善)
@@ -3975,9 +4030,36 @@ def training_review_mode():
         mark_label = st.radio(t("ui.training_review.mark"), list(_MARKS.keys()), horizontal=True,
                               key=f"tr_mark_{target_idx}", label_visibility="collapsed")
 
+        # --- v0.16: フィードバックを「タグ + 一行」× 最大5 に構造化 ---
+        # 2026-08 の実績は 1件あたり平均3.2項目(最小2/最大5)。①〜⑤は任意で、
+        # 埋めるための指摘が生まれないよう、空欄はそのまま保存しない。
+        st.markdown("**" + t("ui.fb.items_header") + "**")
+        st.caption(t("ui.fb.items_help"))
+        _tag_opts = ft.tag_options(st.session_state.get("lang", "ja"))
+        _tag_labels = [x[0] for x in _tag_opts]
+        _label_to_key = {x[0]: x[1] for x in _tag_opts}
+        _fb_inputs = []
+        for _i in range(1, 6):
+            _c1, _c2 = st.columns([1, 2.4])
+            with _c1:
+                _sel = st.selectbox(
+                    f"{_i}", _tag_labels, key=f"tr_fbtag_{target_idx}_{_i}",
+                    label_visibility="visible" if _i == 1 else "collapsed")
+            with _c2:
+                _txt = st.text_input(
+                    t("ui.fb.item_text"), key=f"tr_fbtxt_{target_idx}_{_i}",
+                    label_visibility="visible" if _i == 1 else "collapsed",
+                    placeholder=t("ui.fb.item_placeholder") if _i == 1 else "")
+            _fb_inputs.append({"tag": _label_to_key.get(_sel, ""), "text": _txt})
+
+        _free_tag = st.text_input(
+            t("ui.fb.free_tag"), key=f"tr_fbfree_{target_idx}",
+            placeholder=t("ui.fb.free_tag_placeholder"),
+            help=t("ui.fb.free_tag_help"))
+
         eval_comment = st.text_area(
-            t("ui.training_review.comment"), height=100,
-            placeholder=t("ui.training.comment_placeholder"))
+            t("ui.fb.overall_comment"), height=80,
+            placeholder=t("ui.fb.overall_comment_placeholder"))
 
         # v0.15: レビュアーが「自分ならどの相場データを参考にしたか」の画像を添付できる。
         #   staff は My Results で見返せる(=レビュアーの参照ソースがそのまま教材になる)。
@@ -4000,11 +4082,25 @@ def training_review_mode():
             skip_btn = st.form_submit_button(t("ui.training.skip"), use_container_width=True)
 
         if save_btn:
-            # v0.15: フィードバックコメントが空欄なら送信不可(1文字でもあればOK)。
-            #   誤って空のまま評価送信してしまう事故を防ぐ。保存・通知の前に止める。
-            if not str(eval_comment).strip():
-                st.warning("⚠️ " + t("ui.training_review.need_comment"))
+            # v0.16: 自由入力タグは、タグ未選択かつ本文ありの行に適用する
+            #   (固定7に当てはまらない指摘に、その場で名前を付けるための欄)。
+            _free = str(_free_tag or "").strip()
+            _fb_items = []
+            for _it in _fb_inputs:
+                _tg, _tx = _it["tag"], str(_it["text"] or "").strip()
+                if not _tx:
+                    continue
+                if not _tg and _free:
+                    _tg = ft.FREE_TAG_PREFIX + _free
+                _fb_items.append({"tag": _tg, "text": _tx})
+
+            # v0.15→v0.16: 空のまま評価送信する事故を防ぐ。
+            #   フィードバック項目が1つも無く、総評も空なら送信不可。
+            if not _fb_items and not str(eval_comment).strip():
+                st.warning("⚠️ " + t("ui.fb.need_item"))
                 st.stop()
+            # タグ未選択の項目が残っていれば知らせる(保存は止めない)
+            _untagged = [x for x in _fb_items if not x["tag"]]
             # ズレ計算: staff額がレンジ[min,max]内なら0、外れていれば最寄り境界からの差
             gap = ""
             if expert_min > 0 and expert_max > 0 and _staff_offer_val > 0:
@@ -4021,6 +4117,11 @@ def training_review_mode():
             df.at[target_idx, "expert_answer_min"] = expert_min if expert_min > 0 else ""
             df.at[target_idx, "expert_answer_max"] = expert_max if expert_max > 0 else ""
             df.at[target_idx, "price_gap"] = gap
+            # v0.16: 乖離率(%)。price_gap は絶対額なので、扱う価格帯が違う staff 同士では
+            #   比較できない。率に直して初めて横並びの比較と閾値判定が成立する。
+            _gr = ft.gap_rate(_staff_offer_val, expert_min, expert_max)
+            df.at[target_idx, "price_gap_rate"] = "" if _gr is None else _gr
+            df.at[target_idx, "gap_band"] = ft.gap_band(_gr)
             # 正解の相場メモを保存
             df.at[target_idx, "expert_market_min"] = expert_market_min if expert_market_min > 0 else ""
             df.at[target_idx, "expert_market_max"] = expert_market_max if expert_market_max > 0 else ""
@@ -4054,6 +4155,20 @@ def training_review_mode():
             df.at[target_idx, "expert_screenshot_ids"] = _expert_shot_id
             be.write_sheet("training_history", df)
 
+            # v0.16: フィードバック項目を feedback_items タブへ(縦持ち)。
+            #   同じ提出を再評価した場合は、その提出の旧項目を消してから書き直す。
+            _saved_n = ft.save_items(
+                record_ts=str(target.get("timestamp", "") or ""),
+                staff=str(target.get("staff", "") or ""),
+                reviewer=current_reviewer(),
+                reviewed_at=_reviewed_iso,
+                items=_fb_items,
+                source="training",
+                test_id=str(target.get("test_id", "") or ""),
+            )
+            if _untagged:
+                st.info("ℹ️ " + t("ui.fb.untagged_notice", n=len(_untagged)))
+
             # v0.14.0: 評価された staff 本人に Slack DM 通知(失敗しても保存は成功扱い)
             _staff_name = str(target.get("staff", "")).strip()
             _slack_map = load_staff_slack_map()
@@ -4083,6 +4198,15 @@ def training_review_mode():
                 _dm += f"• Cost rate / អត្រាតម្លៃដើម: {_cost_rate_str}\n"
             if (eval_comment or "").strip():
                 _dm += f"• Comment / មតិ: {eval_comment.strip()}\n"
+            # v0.16: 指摘項目をタグ付きで通知する。何回目の指摘かも併記し、
+            #   「また同じことを言われている」が本人に伝わるようにする。
+            if _fb_items:
+                _dm += "\n*Feedback*\n"
+                for _k, _it in enumerate(_fb_items, start=1):
+                    _lbl = ft.tag_label(_it["tag"], "en") or "-"
+                    _cnt = ft.recurrence(str(target.get("staff", "") or ""), _it["tag"]) if _it["tag"] else 0
+                    _rep = f"  (x{_cnt})" if _cnt >= 3 else ""
+                    _dm += f"{_k}. [{_lbl}]{_rep} {_it['text']}\n"
             # v0.15: 誰が評価したかを本人にも明示する
             _dm += f"• Reviewed by / អ្នកពិនិត្យ: {current_reviewer()}\n"
             _dm += "\nOpen Chosuke → *My Results / លទ្ធផលរបស់ខ្ញុំ* to see details."
@@ -4273,6 +4397,7 @@ def training_stats_mode():
             })
         st.dataframe(pd.DataFrame(srows), use_container_width=True, hide_index=True)
         st.caption("※ 件数の少ない人は率が振れます。提出件数と併せて見てください。")
+
 
     # --- 明細(総合評価を日本語表示に変換) ---
     with st.expander(f"📋 明細を見る({len(view)}件) / Detail"):

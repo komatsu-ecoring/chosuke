@@ -13,6 +13,22 @@ HTMLタグ(<b>等)は辞書には含めず、呼び出し側コードで付与�
 
 MESSAGES = {
     "ja": {
+        # --- v0.16: フィードバックのタグ化 ---
+        "ui.fb.items_header": "フィードバック（最大5項目）",
+        "ui.fb.items_help": "指摘ごとにタグを選んで、一行で書く。埋まらない欄は空のままでいい。",
+        "ui.fb.item_text": "指摘の内容",
+        "ui.fb.item_placeholder": "例: 高い順に並べ替えて、Rankごとの金額差を見る",
+        "ui.fb.free_tag": "その他のタグ（7つに当てはまらないとき）",
+        "ui.fb.free_tag_placeholder": "例: 真贋確認",
+        "ui.fb.free_tag_help": "タグを選ばずに本文だけ書いた項目に、ここで付けた名前が適用される。",
+        "ui.fb.overall_comment": "総評（任意）",
+        "ui.fb.overall_comment_placeholder": "良かった点や、次回に向けた一言。",
+        "ui.fb.need_item": "フィードバックを1つ以上入れるか、総評を書いてください。",
+        "ui.fb.untagged_notice": "タグの付いていない項目が {n} 件あります。集計には出ません。",
+        "ui.fb.recurrence_header": "{staff} にこれまで指摘したこと",
+        "ui.fb.recurrence_hint": "3回以上のタグは、もう一度書いても変わらないかもしれません。面談・手順書・配置など別の手を検討してください。",
+        "ui.fb.weakness_header": "あなたへの指摘（直近30件）",
+        "ui.fb.weakness_help": "多い順に並んでいます。上にあるものから直していきましょう。",
         # --- UIラベル ---
         "ui.mode.appraisal": "査定モード",
         "ui.mode.review": "査定レビューモード",
@@ -272,6 +288,22 @@ MESSAGES = {
         "ui.checklist.baseline_hint": "同型・同年式・同コンディションの取引実績を最低3件は確認したか? 1件だけで判断していないか?",
     },
     "en": {
+        # --- v0.16: フィードバックのタグ化 ---
+        "ui.fb.items_header": "Feedback (up to 5 points)",
+        "ui.fb.items_help": "Pick a tag for each point and write one line. Leave unused rows empty.",
+        "ui.fb.item_text": "What to fix",
+        "ui.fb.item_placeholder": "e.g. Sort by price, highest first, and look at how price moves with rank",
+        "ui.fb.free_tag": "Other tag (when none of the seven fit)",
+        "ui.fb.free_tag_placeholder": "e.g. Authenticity check",
+        "ui.fb.free_tag_help": "This name is applied to any point written without a tag.",
+        "ui.fb.overall_comment": "Overall comment (optional)",
+        "ui.fb.overall_comment_placeholder": "What went well, or a note for next time.",
+        "ui.fb.need_item": "Please add at least one feedback point, or write an overall comment.",
+        "ui.fb.untagged_notice": "{n} point(s) have no tag. They will not appear in the totals.",
+        "ui.fb.recurrence_header": "What has been raised with {staff} so far",
+        "ui.fb.recurrence_hint": "A tag at three or more may not change by writing it again. Consider a conversation, the procedure manual, or a change of assignment.",
+        "ui.fb.weakness_header": "Points raised with you (last 30)",
+        "ui.fb.weakness_help": "Sorted by how often. Start from the top.",
         # --- UIラベル ---
         "ui.mode.appraisal": "Appraisal Mode",
         "ui.mode.review": "Appraisal Review Mode",
@@ -529,6 +561,22 @@ MESSAGES = {
         "ui.checklist.baseline_hint": "Have you checked at least 3 transaction records of the same model, year, and condition? Aren't you judging from just one?",
     },
     "km": {
+        # --- v0.16: フィードバックのタグ化 ---
+        "ui.fb.items_header": "Feedback (up to 5 points)",
+        "ui.fb.items_help": "Pick a tag for each point and write one line. Leave unused rows empty.",
+        "ui.fb.item_text": "What to fix",
+        "ui.fb.item_placeholder": "e.g. Sort by price, highest first, and look at how price moves with rank",
+        "ui.fb.free_tag": "Other tag (when none of the seven fit)",
+        "ui.fb.free_tag_placeholder": "e.g. Authenticity check",
+        "ui.fb.free_tag_help": "This name is applied to any point written without a tag.",
+        "ui.fb.overall_comment": "Overall comment (optional)",
+        "ui.fb.overall_comment_placeholder": "What went well, or a note for next time.",
+        "ui.fb.need_item": "Please add at least one feedback point, or write an overall comment.",
+        "ui.fb.untagged_notice": "{n} point(s) have no tag. They will not appear in the totals.",
+        "ui.fb.recurrence_header": "What has been raised with {staff} so far",
+        "ui.fb.recurrence_hint": "A tag at three or more may not change by writing it again. Consider a conversation, the procedure manual, or a change of assignment.",
+        "ui.fb.weakness_header": "Points raised with you (last 30)",
+        "ui.fb.weakness_help": "Sorted by how often. Start from the top.",
         # --- UIラベル ---
         "ui.mode.appraisal": "ការវាយតម្លៃ (Appraisal)",
         "ui.mode.review": "ការត្រួតពិនិត្យការវាយតម្លៃ (Review)",
