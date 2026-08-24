@@ -4462,6 +4462,400 @@ def training_stats_mode():
         )
 
 
+def test_mode():
+    """鑑定士試験レベル1 受験者画面。仕様書 第3章。"""
+    st.markdown("## 📝 テスト / Appraiser Test")
+
+    # --- staff 選択 ---
+    staff_options = load_staff_master()
+    _current = str(st.session_state.get("test_staff", "") or "").strip()
+    _idx = staff_options.index(_current) if _current in staff_options else None
+    _choice = st.selectbox("受験者 / Examinee", staff_options, index=_idx,
+                           placeholder="名前を選択…", key="test_staff_select")
+    if _choice:
+        st.session_state["test_staff"] = _choice
+    staff = str(st.session_state.get("test_staff", "") or "").strip()
+    if not staff:
+        st.info("受験者を選択してください。")
+        return
+
+    # --- 問題セット読み込み ---
+    try:
+        df_items = be.read_sheet("test_items")
+    except Exception:
+        df_items = pd.DataFrame(columns=be.SHEET_SCHEMAS["test_items"])
+    if df_items.empty:
+        st.info("受験可能なテストがありません。管理者に問い合わせてください。")
+        return
+    available_sets = sorted(df_items["test_set_id"].dropna().unique().tolist())
+    if not available_sets:
+        st.info("受験可能なテストがありません。")
+        return
+
+    # --- セッション読み込み ---
+    try:
+        df_sessions = be.read_sheet("test_sessions")
+    except Exception:
+        df_sessions = pd.DataFrame(columns=be.SHEET_SCHEMAS["test_sessions"])
+
+    # --- in_progress セッションがあれば再開 ---
+    in_progress = df_sessions[
+        (df_sessions["staff"] == staff) & (df_sessions["status"] == "in_progress")
+    ] if not df_sessions.empty else pd.DataFrame()
+
+    if not in_progress.empty:
+        # 既存セッションを再開
+        session_row = in_progress.iloc[0]
+        session_id = session_row["session_id"]
+        test_set_id = session_row["test_set_id"]
+        started_at = session_row["started_at"]
+        st.info(f"▶️ 中断中のテストがあります: **{test_set_id}**（開始: {started_at}）— 再開します。")
+    else:
+        # 新規開始
+        sel_set = st.selectbox("問題セット / Test Set", available_sets, key="test_mode_sel_set")
+        # 既に submitted/graded/notified のセッションがあるか
+        already_done = df_sessions[
+            (df_sessions["staff"] == staff) & (df_sessions["test_set_id"] == sel_set)
+            & (df_sessions["status"].isin(["submitted", "graded", "notified"]))
+        ] if not df_sessions.empty else pd.DataFrame()
+        if not already_done.empty:
+            st.warning(f"この問題セット（{sel_set}）は既に提出済みです。")
+            return
+
+        if st.button("🚀 テストを開始する / Start Test", type="primary"):
+            _now = datetime.now().isoformat(timespec="seconds")
+            session_id = f"{sel_set}::{staff}::{_now}"
+            new_session = {
+                "session_id": session_id,
+                "test_set_id": sel_set,
+                "staff": staff,
+                "started_at": _now,
+                "finished_at": "",
+                "elapsed_min": "",
+                "status": "in_progress",
+                "total_score": "",
+                "result": "",
+                "graded_by": "",
+                "graded_at": "",
+                "notified_at": "",
+            }
+            be.append_row("test_sessions", new_session)
+            st.rerun()
+        return
+
+    # ================================================================
+    # テスト進行中
+    # ================================================================
+    test_set_id = str(test_set_id)
+    session_id = str(session_id)
+
+    # 問題データ（受験者に見せるのは q_no と require_photo_id のみ。item_label は絶対に出さない）
+    items = df_items[df_items["test_set_id"] == test_set_id].copy()
+    items["q_no"] = pd.to_numeric(items["q_no"], errors="coerce").fillna(0).astype(int)
+    items = items.sort_values("q_no").reset_index(drop=True)
+    # 安全策: 受験者に渡すデータから機密列を除去
+    items_safe = items[["q_no", "require_photo_id"]].copy()
+    items_safe["require_photo_id"] = pd.to_numeric(items_safe["require_photo_id"], errors="coerce").fillna(0).astype(int)
+
+    # 既存解答
+    try:
+        df_answers = be.read_sheet("test_answers")
+    except Exception:
+        df_answers = pd.DataFrame(columns=be.SHEET_SCHEMAS["test_answers"])
+    my_answers = df_answers[df_answers["session_id"] == session_id] if not df_answers.empty else pd.DataFrame()
+    submitted_qnos = set(pd.to_numeric(my_answers["q_no"], errors="coerce").dropna().astype(int).tolist()) if not my_answers.empty else set()
+
+    # --- 経過時間表示 ---
+    try:
+        _started = datetime.fromisoformat(str(started_at))
+        _elapsed = datetime.now() - _started
+        _elapsed_min = int(_elapsed.total_seconds() / 60)
+        _color = "red" if _elapsed_min >= 100 else "green"
+        st.markdown(f"⏱️ 経過時間: :**{_color}[{_elapsed_min}分]** / 目安 100分")
+    except Exception:
+        pass
+
+    # --- 進捗表示 ---
+    total_q = len(items_safe)
+    done_count = len(submitted_qnos)
+    st.progress(done_count / max(total_q, 1), text=f"{done_count} / {total_q} 提出済み")
+
+    # --- 問の選択 ---
+    q_labels = []
+    for _, r in items_safe.iterrows():
+        qn = int(r["q_no"])
+        mark = "✅" if qn in submitted_qnos else "⬜"
+        q_labels.append(f"{mark} 問{qn}")
+    sel_q_label = st.radio("問を選択 / Select Question", q_labels, horizontal=True, key="test_q_sel")
+    sel_q_no = int(sel_q_label.split("問")[1])
+    req_photo_id = int(items_safe[items_safe["q_no"] == sel_q_no]["require_photo_id"].iloc[0])
+
+    # 既存解答があれば表示
+    existing_ans = my_answers[pd.to_numeric(my_answers["q_no"], errors="coerce").astype(int) == sel_q_no] if not my_answers.empty else pd.DataFrame()
+    if not existing_ans.empty:
+        st.success(f"問{sel_q_no} は提出済みです（再提出で上書きされます）。")
+
+    # --- 入力フォーム ---
+    st.markdown(f"### 問{sel_q_no}")
+    _fk = f"test_q{sel_q_no}"  # form key prefix
+
+    col1, col2 = st.columns(2)
+    with col1:
+        overall_file = st.file_uploader(
+            "📷 全体像 / Overall (必須)", type=["png", "jpg", "jpeg"],
+            accept_multiple_files=False, key=f"{_fk}_overall")
+        logo_file = st.file_uploader(
+            "📷 ロゴ / Logo (必須)", type=["png", "jpg", "jpeg"],
+            accept_multiple_files=False, key=f"{_fk}_logo")
+        id_label = "📷 個体特定情報 / ID info (必須)" if req_photo_id else "📷 個体特定情報 / ID info (任意)"
+        id_file = st.file_uploader(
+            id_label, type=["png", "jpg", "jpeg"],
+            accept_multiple_files=False, key=f"{_fk}_id")
+        rank_files = st.file_uploader(
+            "📷 Rankポイント / Rank points 2〜3枚 (必須)", type=["png", "jpg", "jpeg"],
+            accept_multiple_files=True, key=f"{_fk}_rank")
+
+    with col2:
+        item_name = st.text_input("商品名 / Item name", key=f"{_fk}_name")
+        year = st.text_input("年式 / Year", key=f"{_fk}_year")
+        rank_options = ["—", "N", "S", "SA", "A", "AB", "B", "BC", "C", "D"]
+        rank = st.selectbox("Rank", rank_options, key=f"{_fk}_rank_sel")
+        price_usd = st.number_input("相場 (USD) / Market Price", min_value=0, step=1,
+                                     key=f"{_fk}_price", format="%d")
+
+    # --- 必須写真チェック ---
+    photo_overall = 1 if overall_file else 0
+    photo_logo = 1 if logo_file else 0
+    photo_id = 1 if id_file else 0
+    rank_count = len(rank_files) if rank_files else 0
+
+    missing = []
+    if not photo_overall:
+        missing.append("全体像")
+    if not photo_logo:
+        missing.append("ロゴ")
+    if req_photo_id and not photo_id:
+        missing.append("個体特定情報")
+    if rank_count < 2:
+        missing.append(f"Rankポイント（{rank_count}/2枚以上）")
+
+    # --- 提出ボタン ---
+    if missing:
+        st.warning(
+            "⚠️ 必須写真が不足しています / Required photos missing:\n"
+            + "、".join(missing)
+            + "\n\nこのまま提出すると **0点** になります。"
+        )
+
+    submit_label = f"問{sel_q_no} を提出する / Submit Q{sel_q_no}"
+    if sel_q_no in submitted_qnos:
+        submit_label = f"問{sel_q_no} を再提出する / Resubmit Q{sel_q_no}"
+
+    # 不足があっても提出は止めない（確認チェックのみ）
+    confirm_ok = True
+    if missing:
+        confirm_ok = st.checkbox(
+            "必須写真が不足していますが、このまま提出します / Submit despite missing photos",
+            key=f"{_fk}_confirm")
+
+    if st.button(submit_label, type="primary", disabled=not confirm_ok, key=f"{_fk}_submit"):
+        _now = datetime.now().isoformat(timespec="seconds")
+        answer_id = f"{session_id}::{sel_q_no}"
+        shot_id = f"{session_id}::q{sel_q_no}"
+
+        # 画像保存
+        _img_idx = 0
+        if overall_file:
+            try:
+                be.save_screenshot(shot_id, _img_idx, overall_file.read())
+                _img_idx += 1
+            except Exception:
+                pass
+        if logo_file:
+            try:
+                be.save_screenshot(shot_id, _img_idx, logo_file.read())
+                _img_idx += 1
+            except Exception:
+                pass
+        if id_file:
+            try:
+                be.save_screenshot(shot_id, _img_idx, id_file.read())
+                _img_idx += 1
+            except Exception:
+                pass
+        for rf in (rank_files or []):
+            try:
+                be.save_screenshot(shot_id, _img_idx, rf.read())
+                _img_idx += 1
+            except Exception:
+                pass
+
+        answer_row = {
+            "answer_id": answer_id,
+            "session_id": session_id,
+            "q_no": sel_q_no,
+            "submitted_at": _now,
+            "shot_id": shot_id,
+            "photo_overall": photo_overall,
+            "photo_logo": photo_logo,
+            "photo_id": photo_id,
+            "photo_rank_count": rank_count,
+            "item_name": item_name,
+            "year": year,
+            "rank": rank if rank != "—" else "",
+            "price_usd": price_usd if price_usd else "",
+            "auto_photo_ok": "",
+            "auto_gap_rate": "",
+            "auto_score": "",
+            "final_score": "",
+            "override_reason": "",
+        }
+
+        # 既存解答があれば上書き、なければ追記
+        if not existing_ans.empty:
+            # 上書き: 全解答を読み直して該当行を差し替え
+            df_all = be.read_sheet("test_answers")
+            mask = df_all["answer_id"] == answer_id
+            if mask.any():
+                for col, val in answer_row.items():
+                    df_all.loc[mask, col] = val
+                be.write_sheet("test_answers", df_all)
+            else:
+                be.append_row("test_answers", answer_row)
+        else:
+            be.append_row("test_answers", answer_row)
+
+        st.toast(f"✅ 問{sel_q_no} を提出しました。")
+        st.rerun()
+
+    # --- テスト終了 ---
+    st.markdown("---")
+    if done_count >= total_q:
+        st.success(f"全 {total_q} 問の解答が揃いました。")
+        if st.button("🏁 テストを終了する / Finish Test", type="primary", key="test_finish"):
+            _now = datetime.now().isoformat(timespec="seconds")
+            df_sess = be.read_sheet("test_sessions")
+            mask = df_sess["session_id"] == session_id
+            if mask.any():
+                df_sess.loc[mask, "finished_at"] = _now
+                df_sess.loc[mask, "status"] = "submitted"
+                try:
+                    _started = datetime.fromisoformat(str(started_at))
+                    _el = (datetime.now() - _started).total_seconds() / 60
+                    df_sess.loc[mask, "elapsed_min"] = round(_el, 1)
+                except Exception:
+                    pass
+                be.write_sheet("test_sessions", df_sess)
+            st.success("テストを終了しました。お疲れ様でした！採点結果をお待ちください。")
+            st.rerun()
+    else:
+        remaining = total_q - done_count
+        st.caption(f"残り {remaining} 問を提出すると、テストを終了できます。")
+
+
+def test_admin_mode():
+    """テスト問題の登録・編集画面（管理者専用）。仕様書 第4章。"""
+    st.markdown("## 📋 テスト問題管理 / Test Item Management")
+    st.caption("鑑定士試験レベル1の問題セット（10問）を登録・編集します。")
+
+    # --- 既存データ読み込み ---
+    try:
+        df = be.read_sheet("test_items")
+    except Exception:
+        df = pd.DataFrame(columns=be.SHEET_SCHEMAS["test_items"])
+    if df.empty:
+        df = pd.DataFrame(columns=be.SHEET_SCHEMAS["test_items"])
+
+    # --- 問題セット一覧 ---
+    existing_sets = sorted(df["test_set_id"].dropna().unique().tolist()) if not df.empty and "test_set_id" in df.columns else []
+
+    st.markdown("### 問題セットの作成 / Create Test Set")
+    new_set_id = st.text_input("新しい test_set_id（例: LV1-2026-09）", key="test_admin_new_set_id")
+    if st.button("➕ 問題セットを作成", key="test_admin_create_set"):
+        _sid = (new_set_id or "").strip()
+        if not _sid:
+            st.warning("test_set_id を入力してください。")
+        elif _sid in existing_sets:
+            st.warning(f"「{_sid}」は既に存在します。下の編集欄から修正してください。")
+        else:
+            # 10行の空テンプレートを追加
+            rows = []
+            for q in range(1, 11):
+                rows.append({
+                    "test_set_id": _sid,
+                    "q_no": q,
+                    "category": "",
+                    "item_label": "",
+                    "answer_min_usd": "",
+                    "answer_max_usd": "",
+                    "require_photo_id": 0,
+                    "answer_rank": "",
+                    "answer_year": "",
+                    "notes": "",
+                })
+            new_df = pd.DataFrame(rows)
+            df = pd.concat([df, new_df], ignore_index=True)
+            be.write_sheet("test_items", df)
+            st.success(f"問題セット「{_sid}」を作成しました（10問分のテンプレート）。")
+            st.rerun()
+
+    if not existing_sets:
+        st.info("まだ問題セットがありません。上のフォームから作成してください。")
+        return
+
+    # --- 問題セットの選択・編集 ---
+    st.markdown("---")
+    st.markdown("### 問題セットの編集 / Edit Test Set")
+    sel_set = st.selectbox("編集する問題セット", existing_sets, key="test_admin_sel_set")
+    mask = df["test_set_id"] == sel_set
+    df_set = df[mask].copy()
+
+    # q_no を整数化してソート
+    df_set["q_no"] = pd.to_numeric(df_set["q_no"], errors="coerce").fillna(0).astype(int)
+    df_set = df_set.sort_values("q_no").reset_index(drop=True)
+
+    _TEST_CATEGORIES = ["bag", "shoes", "apparel", "jewellery", "other"]
+
+    edited = st.data_editor(
+        df_set,
+        use_container_width=True,
+        num_rows="fixed",
+        column_config={
+            "test_set_id": st.column_config.TextColumn("test_set_id", disabled=True),
+            "q_no": st.column_config.NumberColumn("問番号", disabled=True, min_value=1, max_value=10),
+            "category": st.column_config.SelectboxColumn("カテゴリ", options=_TEST_CATEGORIES, required=True),
+            "item_label": st.column_config.TextColumn("商品名メモ（管理者用）", width="medium"),
+            "answer_min_usd": st.column_config.NumberColumn("正解 下限(USD)", min_value=0, format="%.0f"),
+            "answer_max_usd": st.column_config.NumberColumn("正解 上限(USD)", min_value=0, format="%.0f"),
+            "require_photo_id": st.column_config.CheckboxColumn("個体特定 必須"),
+            "answer_rank": st.column_config.TextColumn("参考Rank"),
+            "answer_year": st.column_config.TextColumn("参考 年式"),
+            "notes": st.column_config.TextColumn("採点メモ", width="large"),
+        },
+        key=f"test_items_editor_{sel_set}",
+    )
+
+    # --- 構成チェック（警告のみ、強制しない）---
+    _EXPECTED = {"bag": 6, "shoes": 1, "apparel": 1, "jewellery": 1, "other": 1}
+    cat_counts = edited["category"].value_counts().to_dict()
+    warnings = []
+    for cat, expected in _EXPECTED.items():
+        actual = cat_counts.get(cat, 0)
+        if actual != expected:
+            warnings.append(f"  {cat}: {actual}問（想定 {expected}問）")
+    if warnings:
+        st.warning("⚠️ カテゴリ構成が想定と異なります（警告のみ）:\n" + "\n".join(warnings))
+
+    # --- 保存 ---
+    if st.button("💾 問題セットを保存", type="primary", key="test_admin_save"):
+        # 編集されたセットを元のデータに戻す
+        df_other = df[~mask].copy()
+        df_updated = pd.concat([df_other, edited], ignore_index=True)
+        be.write_sheet("test_items", df_updated)
+        st.success(f"問題セット「{sel_set}」を保存しました。")
+        st.rerun()
+
+
 def settings_mode():
     st.markdown("## ⚙️ " + t("ui.mode.settings"))
 
@@ -4665,12 +5059,12 @@ def main():
     #   admin   : 全モード。
     if is_admin:
         mode_keys = ["🔍 査定モード", "📝 査定レビューモード", "🎓 トレーニング評価モード",
-                     "📊 成績モード", "📚 ナレッジ管理モード", "⚙️ 設定"]
+                     "📊 成績モード", "📚 ナレッジ管理モード", "📝 テスト", "📋 テスト問題管理", "⚙️ 設定"]
     elif is_trainer:
         mode_keys = ["🔍 査定モード", "📝 査定レビューモード", "🎓 トレーニング評価モード",
-                     "📊 成績モード", "📚 ナレッジ管理モード"]
+                     "📊 成績モード", "📚 ナレッジ管理モード", "📝 テスト"]
     else:
-        mode_keys = ["🔍 査定モード", "🎓 トレーニングモード"]
+        mode_keys = ["🔍 査定モード", "🎓 トレーニングモード", "📝 テスト"]
 
     with st.sidebar:
         st.markdown(t("ui.sidebar.mode_select"))
@@ -4681,6 +5075,8 @@ def main():
             "🎓 トレーニング評価モード": "ui.mode.training_review",
             "📊 成績モード": "ui.mode.stats",
             "📚 ナレッジ管理モード": "ui.mode.knowledge",
+            "📝 テスト": "📝 テスト",
+            "📋 テスト問題管理": "📋 テスト問題管理",
             "⚙️ 設定": "ui.mode.settings",
         }
         _MODE_EMOJI = {
@@ -4690,6 +5086,8 @@ def main():
             "🎓 トレーニング評価モード": "🎓",
             "📊 成績モード": "📊",
             "📚 ナレッジ管理モード": "📚",
+            "📝 テスト": "📝",
+            "📋 テスト問題管理": "📋",
             "⚙️ 設定": "⚙️",
         }
         # v0.15: ロールごとの分岐は mode_keys で済むため、radio 呼び出しは1つに統合。
@@ -4775,6 +5173,10 @@ def main():
         training_stats_mode()
     elif mode == "📚 ナレッジ管理モード":
         knowledge_mode()
+    elif mode == "📝 テスト":
+        test_mode()
+    elif mode == "📋 テスト問題管理":
+        test_admin_mode()
     else:
         settings_mode()
 

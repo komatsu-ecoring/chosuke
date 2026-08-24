@@ -100,6 +100,55 @@ SHEET_SCHEMAS = {
         "eval_comment",           # フィードバックコメント(自由記述)
         "expert_screenshot_ids",  # v0.15: 裕平さんが参考にした相場データ画像の shot_id
         "reviewed_at",
+        "reviewed_by",            # v0.17: スキーマ整合(app.py が既に書き込んでいた列)
+        "gap_band",               # v0.17: スキーマ整合(app.py が既に書き込んでいた列)
+    ],
+    # v0.17: 鑑定士試験レベル1
+    "test_items": [
+        "test_set_id",            # 問題セットの識別子。例 LV1-2026-09
+        "q_no",                   # 問番号 1〜10
+        "category",               # bag / shoes / apparel / jewellery / other
+        "item_label",             # 管理者用の商品名メモ(受験者には非表示)
+        "answer_min_usd",         # 正解相場の下限
+        "answer_max_usd",         # 正解相場の上限
+        "require_photo_id",       # 1=個体特定情報の撮影必須 / 0=免除
+        "answer_rank",            # 参考用(採点しない)
+        "answer_year",            # 参考用(採点しない)
+        "notes",                  # 採点時の参照メモ
+    ],
+    "test_sessions": [
+        "session_id",             # <test_set_id>::<staff>::<開始timestamp>
+        "test_set_id",            # 問題セット
+        "staff",                  # 受験者
+        "started_at",             # 開始時刻
+        "finished_at",            # 最終提出時刻
+        "elapsed_min",            # 所要時間(分)。自動計算
+        "status",                 # in_progress / submitted / graded / notified
+        "total_score",            # 合計点(採点後に確定)
+        "result",                 # pass / fail
+        "graded_by",              # 採点者
+        "graded_at",              # 採点日時
+        "notified_at",            # 通知日時
+    ],
+    "test_answers": [
+        "answer_id",              # <session_id>::<q_no>
+        "session_id",             # 所属セッション
+        "q_no",                   # 問番号
+        "submitted_at",           # その問の提出時刻
+        "shot_id",                # 画像の保存キー(screenshots タブ参照)
+        "photo_overall",          # 全体像を提出したか 1/0
+        "photo_logo",             # ロゴ 1/0
+        "photo_id",               # 個体特定情報 1/0
+        "photo_rank_count",       # Rankポイントの枚数
+        "item_name",              # 商品名(採点しない)
+        "year",                   # 年式(採点しない)
+        "rank",                   # Rank(採点しない)
+        "price_usd",              # 相場(数値ひとつ)
+        "auto_photo_ok",          # 自動判定: 必須写真が揃っているか
+        "auto_gap_rate",          # 自動判定: 乖離率(%)
+        "auto_score",             # 自動判定: 10 / 5 / 0
+        "final_score",            # 最終得点(既定は auto_score、Director が上書き可)
+        "override_reason",        # 上書きした場合の理由
     ],
 }
 
@@ -156,10 +205,12 @@ def init_backend():
     ※API節約のため、セッション中に一度だけ実行する(2回目以降はスキップ)。"""
     if st.session_state.get("_backend_inited"):
         return
+    # v0.17: 列の自動補完を複数タブに拡大(新規タブ追加時もここに足す)
+    _MIGRATE_TABS = ["appraisal_history", "training_history", "feedback_items",
+                     "test_items", "test_sessions", "test_answers"]
     for name in SHEET_SCHEMAS:
         ws = _get_or_create_ws(name)
-        # appraisal_history は後発の追加列(screenshot_ids等)を後方互換で補う
-        if name == "appraisal_history":
+        if name in _MIGRATE_TABS:
             _ensure_columns(ws, SHEET_SCHEMAS[name])
     st.session_state["_backend_inited"] = True
 
