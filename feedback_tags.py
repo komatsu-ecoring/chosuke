@@ -179,14 +179,28 @@ def tag_counts(staff: str = "", last_n_records: int = 0) -> pd.DataFrame:
     return g[["tag", "label_ja", "label_en", "count"]].reset_index(drop=True)
 
 
-def recurrence(staff: str, tag: str) -> int:
-    """この staff がこのタグで指摘された累計回数。"""
+RECUR_WINDOW = 10   # 再発判定の窓（提出件数）
+RECUR_LIMIT  = 3    # この回数以上で未解消
+
+
+def recurrence(staff: str, tag: str, last_n_records: int = 0) -> int:
+    """この staff がこのタグで指摘された回数。
+
+    last_n_records > 0 のとき、直近その件数の「提出」に絞る。
+    0（既定）のときは従来どおり累計を返す。
+    """
     df = load_items()
     if df.empty or not staff or not tag:
         return 0
-    m = ((df["staff"].astype(str).str.strip() == str(staff).strip())
-         & (df["tag"].astype(str).str.strip() == str(tag).strip()))
-    return int(m.sum())
+    df = df[df["staff"].astype(str).str.strip() == str(staff).strip()]
+    if df.empty:
+        return 0
+    if last_n_records and last_n_records > 0:
+        recent = (df[["record_ts"]].drop_duplicates()
+                    .sort_values("record_ts", ascending=False)
+                    .head(last_n_records)["record_ts"].tolist())
+        df = df[df["record_ts"].isin(recent)]
+    return int((df["tag"].astype(str).str.strip() == str(tag).strip()).sum())
 
 
 def items_for_record(record_ts: str) -> pd.DataFrame:

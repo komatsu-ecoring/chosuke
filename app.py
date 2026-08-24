@@ -4461,6 +4461,43 @@ def training_stats_mode():
             mime="text/csv",
         )
 
+    # --- レベル1受験資格（staff 1名選択時のみ） ---
+    if sel_staff != "全員 / All":
+        st.markdown("---")
+        st.markdown("### 🎯 レベル1 受験資格 / Level 1 Eligibility")
+
+        LV1_MIN_SUBMISSIONS = 20
+
+        # 要件①: 評価済の提出が20件以上（期間フィルタに関係なく全期間で判定）
+        all_reviewed = done[done["staff"] == sel_staff]
+        reviewed_count = len(all_reviewed)
+        req1_ok = reviewed_count >= LV1_MIN_SUBMISSIONS
+
+        # 要件②: 直近10件の提出で同一タグの再発が3回以上ないこと
+        recent_tags = ft.tag_counts(sel_staff, last_n_records=ft.RECUR_WINDOW)
+        recurring = recent_tags[recent_tags["count"] >= ft.RECUR_LIMIT] if not recent_tags.empty else pd.DataFrame()
+        req2_ok = recurring.empty
+
+        r1, r2 = st.columns(2)
+        with r1:
+            if req1_ok:
+                st.success(f"① 評価済の提出が{LV1_MIN_SUBMISSIONS}件以上　✅　（{reviewed_count}件）")
+            else:
+                remaining = LV1_MIN_SUBMISSIONS - reviewed_count
+                st.error(f"① 評価済の提出が{LV1_MIN_SUBMISSIONS}件以上　❌　（{reviewed_count}件 — あと{remaining}件）")
+        with r2:
+            if req2_ok:
+                st.success(f"② 同一タグの再発が未解消でない　✅")
+            else:
+                for _, row in recurring.iterrows():
+                    tag_disp = ft.tag_label(row["tag"], "ja")
+                    st.error(f"② 同一タグの再発が未解消でない　❌　（{tag_disp} ×{int(row['count'])}　直近{ft.RECUR_WINDOW}件）")
+
+        if req1_ok and req2_ok:
+            st.info("🎉 **受験資格あり / Eligible**")
+        else:
+            st.caption("両方 ✅ になると受験資格ありと表示されます。経過措置としてDirector判断で免除する場合はシステム外で対応してください。")
+
 
 def test_mode():
     """鑑定士試験レベル1 受験者画面。仕様書 第3章。"""
@@ -4751,6 +4788,303 @@ def test_mode():
     else:
         remaining = total_q - done_count
         st.caption(f"残り {remaining} 問を提出すると、テストを終了できます。")
+
+
+@st.cache_data(show_spinner=False, ttl=300)
+def _load_shot_images(shot_id: str) -> list[bytes]:
+    """shot_id の画像をデコードしてキャッシュする（TTL 5分）。"""
+    if not shot_id:
+        return []
+    try:
+        return be.load_screenshots(shot_id)
+    except Exception:
+        return []
+
+
+def test_grading_mode():
+    """テスト採点画面（管理者）。仕様書 第5章。
+    表示単位は問番号ごとに全受験者を横に並べる。"""
+    st.markdown("## ✏️ テスト採点 / Test Grading")
+
+    # --- データ読み込み ---
+    try:
+        df_sessions = be.read_sheet("test_sessions")
+    except Exception:
+        df_sessions = pd.DataFrame(columns=be.SHEET_SCHEMAS["test_sessions"])
+    try:
+        df_answers = be.read_sheet("test_answers")
+    except Exception:
+        df_answers = pd.DataFrame(columns=be.SHEET_SCHEMAS["test_answers"])
+    try:
+        df_items = be.read_sheet("test_items")
+    except Exception:
+        df_items = pd.DataFrame(columns=be.SHEET_SCHEMAS["test_items"])
+
+    # submitted / graded / notified のみ表示（in_progress は非表示）
+    gradable = df_sessions[
+        df_sessions["status"].isin(["submitted", "graded", "notified"])
+    ] if not df_sessions.empty else pd.DataFrame()
+    if gradable.empty:
+        st.info("採点対象のテストセッションがありません（status = submitted のみ対象）。")
+        return
+
+    # --- 問題セット選択 ---
+    set_ids = sorted(gradable["test_set_id"].dropna().unique().tolist())
+    sel_set = st.selectbox("問題セット / Test Set", set_ids, key="grading_sel_set")
+    sessions_in_set = gradable[gradable["test_set_id"] == sel_set].copy()
+    if sessions_in_set.empty:
+        st.info("このセットには採点対象セッションがありません。")
+        return
+
+    staff_list = sorted(sessions_in_set["staff"].unique().tolist())
+    session_map = {}  # staff -> session_id
+    for _, row in sessions_in_set.iterrows():
+        session_map[row["staff"]] = row["session_id"]
+
+    # 問題定義
+    items = df_items[df_items["test_set_id"] == sel_set].copy()
+    items["q_no"] = pd.to_numeric(items["q_no"], errors="coerce").fillna(0).astype(int)
+    items = items.sort_values("q_no").reset_index(drop=True)
+    if items.empty:
+        st.warning("問題定義が見つかりません。")
+        return
+
+    # 解答データ（該当セッション分）
+    target_sids = list(session_map.values())
+    answers = df_answers[df_answers["session_id"].isin(target_sids)].copy() if not df_answers.empty else pd.DataFrame()
+    answers["q_no"] = pd.to_numeric(answers.get("q_no", pd.Series(dtype=int)), errors="coerce").fillna(0).astype(int)
+
+    st.caption(f"受験者: {', '.join(staff_list)}（{len(staff_list)}名）")
+
+    # --- 自動判定ロジック（仕様書 5.3） ---
+    LV1_TOLERANCE = 0.20
+
+    def _auto_score(photo_ok: bool, price, ans_min, ans_max):
+        """(score, gap_rate_val) を返す。"""
+        if not photo_ok:
+            return 0, None
+        rate = ft.gap_rate(price, ans_min, ans_max)
+        if rate is None:
+            return 0, None
+        if rate == 0.0:
+            return 10, 0.0
+        if abs(rate) <= LV1_TOLERANCE * 100:
+            return 5, rate
+        return 0, rate
+
+    # --- 問番号タブ ---
+    q_tabs = st.tabs([f"問{int(r['q_no'])}" for _, r in items.iterrows()])
+
+    # 変更を蓄積して一括保存
+    pending_changes = {}  # answer_id -> {col: val, ...}
+
+    for tab, (_, item_row) in zip(q_tabs, items.iterrows()):
+        q_no = int(item_row["q_no"])
+        ans_min = item_row.get("answer_min_usd", "")
+        ans_max = item_row.get("answer_max_usd", "")
+        category = item_row.get("category", "")
+        req_photo_id = int(pd.to_numeric(item_row.get("require_photo_id", 0), errors="coerce") or 0)
+        item_label = item_row.get("item_label", "")
+        notes = item_row.get("notes", "")
+
+        with tab:
+            # 管理者向け情報（受験者には見えない画面なので表示OK）
+            st.markdown(f"**問{q_no}** — {category} / {item_label}")
+            st.caption(f"正解レンジ: ${ans_min} 〜 ${ans_max}　|　参考メモ: {notes}")
+            if req_photo_id:
+                st.caption("📌 個体特定情報：必須")
+
+            # 受験者ごとに横並び
+            if not staff_list:
+                continue
+            cols = st.columns(len(staff_list))
+            for col_ui, staff_name in zip(cols, staff_list):
+                sid = session_map[staff_name]
+                ans_row = answers[(answers["session_id"] == sid) & (answers["q_no"] == q_no)]
+
+                with col_ui:
+                    st.markdown(f"##### {staff_name}")
+                    sess_row = sessions_in_set[sessions_in_set["session_id"] == sid].iloc[0]
+                    _status = sess_row.get("status", "")
+                    if _status == "graded":
+                        st.caption("✅ 採点済み")
+                    elif _status == "notified":
+                        st.caption("📨 通知済み")
+
+                    if ans_row.empty:
+                        st.warning("未解答")
+                        continue
+
+                    a = ans_row.iloc[0]
+                    answer_id = a.get("answer_id", "")
+
+                    # 写真サムネイル（キャッシュ経由）
+                    _shot = a.get("shot_id", "")
+                    imgs = _load_shot_images(str(_shot)) if _shot else []
+                    if imgs:
+                        thumb_cols = st.columns(min(len(imgs), 3))
+                        for i, img in enumerate(imgs):
+                            with thumb_cols[i % len(thumb_cols)]:
+                                st.image(img, width=120)
+
+                    # 必須写真の充足
+                    p_overall = int(pd.to_numeric(a.get("photo_overall", 0), errors="coerce") or 0)
+                    p_logo = int(pd.to_numeric(a.get("photo_logo", 0), errors="coerce") or 0)
+                    p_id = int(pd.to_numeric(a.get("photo_id", 0), errors="coerce") or 0)
+                    p_rank = int(pd.to_numeric(a.get("photo_rank_count", 0), errors="coerce") or 0)
+                    photo_ok = (p_overall == 1 and p_logo == 1 and p_rank >= 2
+                                and (p_id == 1 if req_photo_id else True))
+                    if photo_ok:
+                        st.caption("📷 写真: ✅ OK")
+                    else:
+                        _miss = []
+                        if not p_overall: _miss.append("全体像")
+                        if not p_logo: _miss.append("ロゴ")
+                        if req_photo_id and not p_id: _miss.append("個体特定")
+                        if p_rank < 2: _miss.append(f"Rank({p_rank}枚)")
+                        st.caption(f"📷 写真: ❌ 不足 ({', '.join(_miss)})")
+
+                    # 商品名・年式・Rank（採点しないが参考表示）
+                    st.caption(f"商品名: {a.get('item_name', '')}　年式: {a.get('year', '')}　Rank: {a.get('rank', '')}")
+
+                    # 相場・乖離率
+                    price = a.get("price_usd", "")
+                    auto_s, auto_gr = _auto_score(photo_ok, price, ans_min, ans_max)
+                    _gr_disp = f"{auto_gr:+.1f}%" if auto_gr is not None else "—"
+                    st.markdown(f"💰 相場: **${price}**　→　乖離率: **{_gr_disp}**")
+                    st.caption(f"自動判定: **{auto_s}点**")
+
+                    # 上書き欄
+                    _existing_final = a.get("final_score", "")
+                    _score_options = ["（自動判定のまま）", "10", "5", "0"]
+                    if str(_existing_final) in ("10", "5", "0"):
+                        _default_idx = _score_options.index(str(int(float(_existing_final))))
+                    else:
+                        _default_idx = 0
+                    final_choice = st.selectbox(
+                        "最終得点", _score_options,
+                        index=_default_idx,
+                        key=f"grade_{answer_id}")
+                    override_reason = st.text_input(
+                        "上書き理由", value=str(a.get("override_reason", "") or ""),
+                        key=f"reason_{answer_id}")
+
+                    # 変更を蓄積
+                    if final_choice == "（自動判定のまま）":
+                        resolved_score = auto_s
+                        resolved_reason = ""
+                    else:
+                        resolved_score = int(final_choice)
+                        resolved_reason = override_reason
+
+                    pending_changes[answer_id] = {
+                        "auto_photo_ok": 1 if photo_ok else 0,
+                        "auto_gap_rate": auto_gr if auto_gr is not None else "",
+                        "auto_score": auto_s,
+                        "final_score": resolved_score,
+                        "override_reason": resolved_reason,
+                    }
+
+    # --- 一括保存 ---
+    st.markdown("---")
+    if st.button("💾 採点を保存する / Save Grades", type="primary", key="grading_save"):
+        df_ans_all = be.read_sheet("test_answers")
+        for aid, changes in pending_changes.items():
+            mask = df_ans_all["answer_id"] == aid
+            if mask.any():
+                for col, val in changes.items():
+                    df_ans_all.loc[mask, col] = val
+        be.write_sheet("test_answers", df_ans_all)
+        st.success("採点を保存しました。")
+        st.rerun()
+
+    # ================================================================
+    # 合否確定 & Slack DM 通知（仕様書 第5.4章・第6章）
+    # ================================================================
+    LV1_PASS_SCORE = 70
+
+    st.markdown("---")
+    st.markdown("### 合否確定 / Confirm Results")
+
+    # 最新の answers を再読み込み（保存直後でも反映されるように）
+    df_ans_latest = be.read_sheet("test_answers")
+    slack_map = load_staff_slack_map()
+
+    for staff_name in staff_list:
+        sid = session_map[staff_name]
+        sess_row = sessions_in_set[sessions_in_set["session_id"] == sid].iloc[0]
+        status = str(sess_row.get("status", ""))
+
+        staff_answers = df_ans_latest[df_ans_latest["session_id"] == sid] if not df_ans_latest.empty else pd.DataFrame()
+        staff_answers_q = staff_answers.copy()
+        staff_answers_q["q_no"] = pd.to_numeric(staff_answers_q.get("q_no", pd.Series(dtype=int)), errors="coerce")
+
+        # final_score の集計
+        scores = pd.to_numeric(staff_answers_q.get("final_score", pd.Series(dtype=float)), errors="coerce")
+        all_graded = scores.notna().all() and len(scores) == len(items)
+        total = int(scores.sum()) if all_graded else None
+
+        # 内訳
+        cnt_10 = int((scores == 10).sum()) if all_graded else 0
+        cnt_5 = int((scores == 5).sum()) if all_graded else 0
+        cnt_0 = int((scores == 0).sum()) if all_graded else 0
+
+        st.markdown(f"#### {staff_name}")
+        if not all_graded:
+            st.warning("全問の最終得点が入力されていません。採点を保存してから確定してください。")
+            continue
+
+        result = "pass" if total >= LV1_PASS_SCORE else "fail"
+        result_label = "合格 PASS ✅" if result == "pass" else "不合格 FAIL ❌"
+        st.markdown(f"**合計: {total} / 100　→　{result_label}**")
+        st.caption(f"内訳 — レンジ内(10点): {cnt_10}問 / 乖離20%以内(5点): {cnt_5}問 / 0点: {cnt_0}問")
+
+        if status == "notified":
+            st.info(f"📨 通知済み（{sess_row.get('notified_at', '')}）— 再送はできません。")
+        elif status == "graded":
+            # 確定済み・未通知 → 通知ボタン
+            st.success("✅ 採点確定済み。通知ボタンで受験者に結果を送信できます。")
+            _slack_id = slack_map.get(staff_name, "")
+            if not _slack_id:
+                st.warning(f"⚠️ {staff_name} の Slack ユーザーID が未登録です。設定画面で登録してください。")
+            if st.button(f"📨 {staff_name} に結果を通知する / Notify", key=f"notify_{sid}",
+                         disabled=not _slack_id):
+                _msg = (
+                    "鑑定士試験 レベル1 結果 / Appraiser Test Level 1 — Result\n\n"
+                    f"結果 / Result:  {'合格 PASS' if result == 'pass' else '不合格 FAIL'}\n"
+                    f"点数 / Score:   {total} / 100\n\n"
+                    "内訳 / Breakdown\n"
+                    f"  相場が正解レンジ内 (10点):  {cnt_10}問\n"
+                    f"  乖離20%以内 (5点):          {cnt_5}問\n"
+                    f"  必須写真の不足 (0点):        {cnt_0}問"
+                    + _chosuke_link_line()
+                )
+                ok, err = send_slack_dm(_slack_id, _msg)
+                if ok:
+                    _now = datetime.now().isoformat(timespec="seconds")
+                    df_sess = be.read_sheet("test_sessions")
+                    mask = df_sess["session_id"] == sid
+                    df_sess.loc[mask, "status"] = "notified"
+                    df_sess.loc[mask, "notified_at"] = _now
+                    be.write_sheet("test_sessions", df_sess)
+                    st.success(f"✅ {staff_name} に通知しました。")
+                    st.rerun()
+                else:
+                    st.error(f"通知に失敗しました: {err}")
+        else:
+            # submitted → 確定ボタン
+            if st.button(f"✅ {staff_name} の合否を確定する / Confirm", key=f"confirm_{sid}"):
+                _now = datetime.now().isoformat(timespec="seconds")
+                df_sess = be.read_sheet("test_sessions")
+                mask = df_sess["session_id"] == sid
+                df_sess.loc[mask, "total_score"] = total
+                df_sess.loc[mask, "result"] = result
+                df_sess.loc[mask, "graded_by"] = current_reviewer()
+                df_sess.loc[mask, "graded_at"] = _now
+                df_sess.loc[mask, "status"] = "graded"
+                be.write_sheet("test_sessions", df_sess)
+                st.success(f"✅ {staff_name} の合否を確定しました: {result_label}")
+                st.rerun()
 
 
 def test_admin_mode():
@@ -5059,7 +5393,8 @@ def main():
     #   admin   : 全モード。
     if is_admin:
         mode_keys = ["🔍 査定モード", "📝 査定レビューモード", "🎓 トレーニング評価モード",
-                     "📊 成績モード", "📚 ナレッジ管理モード", "📝 テスト", "📋 テスト問題管理", "⚙️ 設定"]
+                     "📊 成績モード", "📚 ナレッジ管理モード", "📝 テスト", "✏️ テスト採点",
+                     "📋 テスト問題管理", "⚙️ 設定"]
     elif is_trainer:
         mode_keys = ["🔍 査定モード", "📝 査定レビューモード", "🎓 トレーニング評価モード",
                      "📊 成績モード", "📚 ナレッジ管理モード", "📝 テスト"]
@@ -5076,6 +5411,7 @@ def main():
             "📊 成績モード": "ui.mode.stats",
             "📚 ナレッジ管理モード": "ui.mode.knowledge",
             "📝 テスト": "📝 テスト",
+            "✏️ テスト採点": "✏️ テスト採点",
             "📋 テスト問題管理": "📋 テスト問題管理",
             "⚙️ 設定": "ui.mode.settings",
         }
@@ -5087,6 +5423,7 @@ def main():
             "📊 成績モード": "📊",
             "📚 ナレッジ管理モード": "📚",
             "📝 テスト": "📝",
+            "✏️ テスト採点": "✏️",
             "📋 テスト問題管理": "📋",
             "⚙️ 設定": "⚙️",
         }
@@ -5175,6 +5512,8 @@ def main():
         knowledge_mode()
     elif mode == "📝 テスト":
         test_mode()
+    elif mode == "✏️ テスト採点":
+        test_grading_mode()
     elif mode == "📋 テスト問題管理":
         test_admin_mode()
     else:
