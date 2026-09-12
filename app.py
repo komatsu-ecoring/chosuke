@@ -1,5 +1,5 @@
 """
-Chosuke v0.16.2 — Eco Ring Cambodia AI Appraisal Assistant
+Chosuke v0.16.3 — Eco Ring Cambodia AI Appraisal Assistant
 ========================================================
 査定モード + 査定レビューモード + ナレッジ管理モード + 設定の4画面構成
 ローカルCSVファイルベース(Googleドライブ同期想定)
@@ -4318,19 +4318,25 @@ def training_stats_mode():
     }
 
     # --- 絞り込み ---
-    c1, c2 = st.columns(2)
+    # v0.16.3: 期間を「開始月〜終了月」の範囲指定にする。単月しか選べないと
+    #   「8月〜現在」のような複数月の実績を一度に見られない。
+    months = sorted(done["_month"].unique().tolist())
+    c1, c2, c3 = st.columns(3)
     with c1:
         staff_list = sorted({s for s in done["staff"].tolist() if s})
         sel_staff = st.selectbox("👤 staff", ["全員 / All"] + staff_list, key="stats_staff")
     with c2:
-        months = sorted(done["_month"].unique().tolist(), reverse=True)
-        sel_month = st.selectbox("🗓 期間 / Period", ["全期間 / All"] + months, key="stats_month")
+        _from = st.selectbox("🗓 開始月 / From", months, index=0, key="stats_month_from")
+    with c3:
+        _to = st.selectbox("🗓 終了月 / To", months, index=len(months) - 1, key="stats_month_to")
+    if _from > _to:
+        _from, _to = _to, _from
+    sel_month = f"{_from}_{_to}" if _from != _to else _from
 
     view = done.copy()
     if sel_staff != "全員 / All":
         view = view[view["staff"] == sel_staff]
-    if sel_month != "全期間 / All":
-        view = view[view["_month"] == sel_month]
+    view = view[(view["_month"] >= _from) & (view["_month"] <= _to)]
     if view.empty:
         st.info("該当する提出がありません。/ No submissions match this filter.")
         return
@@ -4426,10 +4432,27 @@ def training_stats_mode():
     # --- staff別ランキング(全員選択時のみ) ---
     if sel_staff == "全員 / All":
         st.markdown("### staff 別 / By staff")
+        # v0.16.3: レベル1受験資格の判定を一覧に載せる。1名ずつ切り替えないと
+        #   確認できないと、受験者の確定作業でstaffの数だけ画面を往復することになる。
+        LV1_MIN_SUBMISSIONS = 20
         srows = []
         for name in sorted({s for s in view["staff"].tolist() if s}):
             sub = view[view["staff"] == name]
             n3, h3, y3, g3_, in3 = _counts(sub)
+            # 要件①は期間フィルタに関係なく全期間で判定する
+            _all_n = len(done[done["staff"] == name])
+            _req1 = _all_n >= LV1_MIN_SUBMISSIONS
+            try:
+                _rt = ft.tag_counts(name, last_n_records=ft.RECUR_WINDOW)
+                _rec = _rt[_rt["count"] >= ft.RECUR_LIMIT] if not _rt.empty else pd.DataFrame()
+            except Exception:
+                _rec = pd.DataFrame()
+            _req2 = _rec.empty
+            if _req2:
+                _req2_disp = "✅"
+            else:
+                _req2_disp = "❌ " + "、".join(
+                    f"{ft.tag_label(r['tag'], 'ja')}×{int(r['count'])}" for _, r in _rec.iterrows())
             srows.append({
                 "staff": name,
                 "提出 / Sub.": n3,
@@ -4438,9 +4461,14 @@ def training_stats_mode():
                 MARK_DISP["ganbaro"]: g3_,
                 "💮率 / Rate": f"{h3 / n3 * 100:.0f}%" if n3 else "-",
                 "レンジ内率 / In range": f"{in3 / n3 * 100:.0f}%" if n3 else "-",
+                f"①評価済{LV1_MIN_SUBMISSIONS}件": ("✅ " if _req1 else "❌ ") + f"{_all_n}件",
+                f"②タグ再発(直近{ft.RECUR_WINDOW}件)": _req2_disp,
+                "受験資格": "🎉 あり" if (_req1 and _req2) else "—",
             })
         st.dataframe(pd.DataFrame(srows), use_container_width=True, hide_index=True)
         st.caption("※ 件数の少ない人は率が振れます。提出件数と併せて見てください。")
+        st.caption(f"※ ①は期間フィルタに関係なく全期間で判定します。②は直近{ft.RECUR_WINDOW}件が対象です。"
+                   "経過措置でDirectorが免除する場合は、システム外で記録してください。")
 
 
     # --- 明細(総合評価を日本語表示に変換) ---
@@ -5617,7 +5645,7 @@ def main():
             st.rerun()
 
         st.markdown("---")
-        st.markdown("**Chosuke v0.16.2 (cloud)**")
+        st.markdown("**Chosuke v0.16.3 (cloud)**")
         st.caption("Wise eyes never miss a corner.")
 
     # ロール外モードへの直接アクセスを防ぐ(保険)
@@ -5647,7 +5675,7 @@ def main():
 
     st.markdown(f"""
     <div class="chosuke-footer">
-        Chosuke v0.16.2 🦉 · Eco Ring Cambodia AI Appraisal Assistant<br>
+        Chosuke v0.16.3 🦉 · Eco Ring Cambodia AI Appraisal Assistant<br>
         {t("ui.footer.tagline")}
     </div>
     """, unsafe_allow_html=True)
