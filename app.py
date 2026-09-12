@@ -1,5 +1,5 @@
 """
-Chosuke v0.10.9 — Eco Ring Cambodia AI Appraisal Assistant
+Chosuke v0.16.1 — Eco Ring Cambodia AI Appraisal Assistant
 ========================================================
 査定モード + 査定レビューモード + ナレッジ管理モード + 設定の4画面構成
 ローカルCSVファイルベース(Googleドライブ同期想定)
@@ -4608,7 +4608,7 @@ def test_mode():
         _elapsed = datetime.now() - _started
         _elapsed_min = int(_elapsed.total_seconds() / 60)
         _color = "red" if _elapsed_min >= 100 else "green"
-        st.markdown(f"⏱️ 経過時間: :**{_color}[{_elapsed_min}分]** / 目安 100分")
+        st.markdown(f"⏱️ 経過時間: **:{_color}[{_elapsed_min}分]** / 目安 100分")
     except Exception:
         pass
 
@@ -4623,6 +4623,17 @@ def test_mode():
         qn = int(r["q_no"])
         mark = "✅" if qn in submitted_qnos else "⬜"
         q_labels.append(f"{mark} 問{qn}")
+    # v0.16.1 (#4): 提出すると選択肢のラベルが ⬜→✅ に変わるため、st.radio の保持値が
+    #   選択肢と一致しなくなり、毎回 問1 に戻っていた。保持値が無効になったときだけ、
+    #   未提出のうち最小の問番号を選択状態にする。
+    _next_idx = 0
+    for _i, _lbl in enumerate(q_labels):
+        if _lbl.startswith("⬜"):
+            _next_idx = _i
+            break
+    if st.session_state.get("test_q_sel") not in q_labels:
+        st.session_state["test_q_sel"] = q_labels[_next_idx]
+
     sel_q_label = st.radio("問を選択 / Select Question", q_labels, horizontal=True, key="test_q_sel")
     sel_q_no = int(sel_q_label.split("問")[1])
     req_photo_id = int(items_safe[items_safe["q_no"] == sel_q_no]["require_photo_id"].iloc[0])
@@ -4644,7 +4655,7 @@ def test_mode():
         logo_file = st.file_uploader(
             "📷 ロゴ / Logo (必須)", type=["png", "jpg", "jpeg"],
             accept_multiple_files=False, key=f"{_fk}_logo")
-        id_label = "📷 個体特定情報 / ID info (必須)" if req_photo_id else "📷 個体特定情報 / ID info (任意)"
+        id_label = "📷 個体特定情報（型番・シリアル） / ID info, model no. or serial (必須)" if req_photo_id else "📷 個体特定情報（型番・シリアル） / ID info, model no. or serial (任意)"
         id_file = st.file_uploader(
             id_label, type=["png", "jpg", "jpeg"],
             accept_multiple_files=False, key=f"{_fk}_id")
@@ -4653,7 +4664,22 @@ def test_mode():
             accept_multiple_files=True, key=f"{_fk}_rank")
 
     with col2:
-        item_name = st.text_input("商品名 / Item name", key=f"{_fk}_name")
+        # v0.16.1 (#5): ブランドは選択式（表記ゆれ防止）。
+        #   ライン名・型番は自由記述のまま残す — 実施要領 第5章の目的（相場を外した
+        #   原因が「商品の特定ミス」か「状態の読み違い」かを採点者が切り分ける）は、
+        #   受験者がどこまで特定できたかの粒度差から読み取るため。
+        try:
+            _brand_opts = sorted(load_brands()["brand_ja"].dropna().astype(str).unique().tolist())
+        except Exception:
+            _brand_opts = []
+        _brand = st.selectbox(
+            "ブランド / Brand", ["—"] + _brand_opts, key=f"{_fk}_brand")
+        _model = st.text_input(
+            "ライン名・型番 / Line & model no.", key=f"{_fk}_model",
+            placeholder="例: ネヴァーフル MM モノグラム M40156")
+        item_name = " ".join(
+            x for x in [(_brand if _brand != "—" else ""), (_model or "").strip()] if x
+        ).strip()
         year = st.text_input("年式 / Year", key=f"{_fk}_year")
         rank_options = ["—", "N", "S", "SA", "A", "AB", "B", "BC", "C", "D"]
         rank = st.selectbox("Rank", rank_options, key=f"{_fk}_rank_sel")
@@ -4856,6 +4882,39 @@ def test_grading_mode():
 
     st.caption(f"受験者: {', '.join(staff_list)}（{len(staff_list)}名）")
 
+    # --- v0.16.1 (#2): 誤って終了したセッションの再開（管理者のみ） ---
+    #   受験中に「テストを終了する」を誤操作すると、受験者は二度と入れなくなる。
+    #   試験当日にその場で復旧できるよう、status を in_progress に戻す手段を置く。
+    _reopenable = sessions_in_set[sessions_in_set["status"] == "submitted"]
+    if not _reopenable.empty:
+        with st.expander("🔓 セッションの再開（誤って終了した場合）"):
+            st.caption(
+                "status を in_progress に戻し、受験者が続きから再開できるようにします。"
+                "提出済みの解答はそのまま残ります。採点確定後（graded / notified）は対象外です。"
+            )
+            _ro_staff = st.selectbox(
+                "再開する受験者", sorted(_reopenable["staff"].unique().tolist()),
+                key="grading_reopen_staff")
+            _ro_reason = st.text_input("再開の理由（記録用）", key="grading_reopen_reason")
+            if st.button("🔓 このセッションを再開する", key="grading_reopen_btn"):
+                if not (_ro_reason or "").strip():
+                    st.warning("再開の理由を入力してください。")
+                else:
+                    _ro_sid = session_map[_ro_staff]
+                    _df_s = be.read_sheet("test_sessions")
+                    _m = _df_s["session_id"] == _ro_sid
+                    if _m.any():
+                        _df_s.loc[_m, "status"] = "in_progress"
+                        _df_s.loc[_m, "finished_at"] = ""
+                        _df_s.loc[_m, "elapsed_min"] = ""
+                        be.write_sheet("test_sessions", _df_s)
+                        st.success(
+                            f"{_ro_staff} のセッションを再開しました（理由: {_ro_reason}）。"
+                            "受験者に「テスト」モードを開き直すよう伝えてください。")
+                        st.rerun()
+                    else:
+                        st.error("セッションが見つかりませんでした。")
+
     # --- 自動判定ロジック（仕様書 5.3） ---
     LV1_TOLERANCE = 0.20
 
@@ -4863,11 +4922,25 @@ def test_grading_mode():
         """(score, gap_rate_val) を返す。"""
         if not photo_ok:
             return 0, None
-        rate = ft.gap_rate(price, ans_min, ans_max)
+        # v0.16.1 (#8): 実施要領 第6章「乖離率は範囲の端からの距離で算出する」に合わせ、
+        #   分母もレンジ端に揃える。ft.gap_rate は分子を端からの距離、分母を中央値で
+        #   計算しており、20%の境界付近で判定がずれていた。
+        try:
+            _p = float(price)
+            _lo = float(ans_min)
+            _hi = float(ans_max)
+        except (TypeError, ValueError):
+            return 0, None
+        if _lo > _hi:
+            _lo, _hi = _hi, _lo
+        if _lo <= _p <= _hi:
+            return 10, 0.0
+        if _p < _lo:
+            rate = -100.0 * (_lo - _p) / _lo if _lo else None
+        else:
+            rate = 100.0 * (_p - _hi) / _hi if _hi else None
         if rate is None:
             return 0, None
-        if rate == 0.0:
-            return 10, 0.0
         if abs(rate) <= LV1_TOLERANCE * 100:
             return 5, rate
         return 0, rate
@@ -4892,7 +4965,7 @@ def test_grading_mode():
             st.markdown(f"**問{q_no}** — {category} / {item_label}")
             st.caption(f"正解レンジ: ${ans_min} 〜 ${ans_max}　|　参考メモ: {notes}")
             if req_photo_id:
-                st.caption("📌 個体特定情報：必須")
+                st.caption("📌 個体特定情報（型番・シリアル）：必須")
 
             # 受験者ごとに横並び
             if not staff_list:
@@ -5148,6 +5221,18 @@ def test_admin_mode():
     df_set["q_no"] = pd.to_numeric(df_set["q_no"], errors="coerce").fillna(0).astype(int)
     df_set = df_set.sort_values("q_no").reset_index(drop=True)
 
+    # v0.16.1 (#1): シートから読むと未入力セルが "" (文字列) で返るため、
+    #   NumberColumn/CheckboxColumn を当てる列が object dtype になり、
+    #   空行のセルに数値を入力しても弾かれる(赤枠のまま確定しない)。
+    #   data_editor に渡す前に列の型を確定させる。
+    for _numcol in ["answer_min_usd", "answer_max_usd"]:
+        df_set[_numcol] = pd.to_numeric(df_set[_numcol], errors="coerce")
+    df_set["require_photo_id"] = (
+        pd.to_numeric(df_set["require_photo_id"], errors="coerce").fillna(0).astype(int).astype(bool)
+    )
+    for _txtcol in ["category", "item_label", "answer_rank", "answer_year", "notes"]:
+        df_set[_txtcol] = df_set[_txtcol].fillna("").astype(str).replace("nan", "")
+
     _TEST_CATEGORIES = ["bag", "shoes", "apparel", "jewellery", "other"]
 
     edited = st.data_editor(
@@ -5157,7 +5242,7 @@ def test_admin_mode():
         column_config={
             "test_set_id": st.column_config.TextColumn("test_set_id", disabled=True),
             "q_no": st.column_config.NumberColumn("問番号", disabled=True, min_value=1, max_value=10),
-            "category": st.column_config.SelectboxColumn("カテゴリ", options=_TEST_CATEGORIES, required=True),
+            "category": st.column_config.SelectboxColumn("カテゴリ", options=_TEST_CATEGORIES),
             "item_label": st.column_config.TextColumn("商品名メモ（管理者用）", width="medium"),
             "answer_min_usd": st.column_config.NumberColumn("正解 下限(USD)", min_value=0, format="%.0f"),
             "answer_max_usd": st.column_config.NumberColumn("正解 上限(USD)", min_value=0, format="%.0f"),
@@ -5166,7 +5251,7 @@ def test_admin_mode():
             "answer_year": st.column_config.TextColumn("参考 年式"),
             "notes": st.column_config.TextColumn("採点メモ", width="large"),
         },
-        key=f"test_items_editor_{sel_set}",
+        key=f"test_items_editor_{sel_set}_{st.session_state.get('test_items_editor_nonce', 0)}",
     )
 
     # --- 構成チェック（警告のみ、強制しない）---
@@ -5184,10 +5269,33 @@ def test_admin_mode():
     if st.button("💾 問題セットを保存", type="primary", key="test_admin_save"):
         # 編集されたセットを元のデータに戻す
         df_other = df[~mask].copy()
-        df_updated = pd.concat([df_other, edited], ignore_index=True)
+        _save = edited.copy()
+        # v0.16.1 (#1): bool で編集した列をシート保存用に 0/1 へ戻す
+        _save["require_photo_id"] = _save["require_photo_id"].fillna(False).astype(bool).astype(int)
+        df_updated = pd.concat([df_other, _save], ignore_index=True)
         be.write_sheet("test_items", df_updated)
+
+        # v0.16.1 (#1): 保存のたびにエディタを作り直し、編集状態の持ち越しを断つ
+        st.session_state["test_items_editor_nonce"] = (
+            st.session_state.get("test_items_editor_nonce", 0) + 1
+        )
         st.success(f"問題セット「{sel_set}」を保存しました。")
         st.rerun()
+
+    # v0.16.1 (#1): 未入力の問があると、受験者画面にも空の問として表示されてしまう。
+    #   保存済みの内容に対して警告を出す。
+    _blank = []
+    for _, _r in df_set.iterrows():
+        _has_range = pd.notna(_r["answer_min_usd"]) and pd.notna(_r["answer_max_usd"])
+        if not (_has_range and str(_r["category"]).strip()):
+            _blank.append(int(_r["q_no"]))
+    if _blank:
+        st.error(
+            "⛔ 未入力の問があります（受験者にも空の問として表示されます）: "
+            + "、".join(f"問{n}" for n in _blank)
+        )
+    else:
+        st.info("✅ 10問すべてにカテゴリと正解レンジが入っています。")
 
 
 def settings_mode():
@@ -5491,7 +5599,7 @@ def main():
             st.rerun()
 
         st.markdown("---")
-        st.markdown("**Chosuke v0.14.0 (cloud)**")
+        st.markdown("**Chosuke v0.16.1 (cloud)**")
         st.caption("Wise eyes never miss a corner.")
 
     # ロール外モードへの直接アクセスを防ぐ(保険)
@@ -5521,7 +5629,7 @@ def main():
 
     st.markdown(f"""
     <div class="chosuke-footer">
-        Chosuke v0.14.0 🦉 · Eco Ring Cambodia AI Appraisal Assistant<br>
+        Chosuke v0.16.1 🦉 · Eco Ring Cambodia AI Appraisal Assistant<br>
         {t("ui.footer.tagline")}
     </div>
     """, unsafe_allow_html=True)
