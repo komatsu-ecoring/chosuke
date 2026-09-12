@@ -1,5 +1,5 @@
 """
-Chosuke v0.16.1 — Eco Ring Cambodia AI Appraisal Assistant
+Chosuke v0.16.2 — Eco Ring Cambodia AI Appraisal Assistant
 ========================================================
 査定モード + 査定レビューモード + ナレッジ管理モード + 設定の4画面構成
 ローカルCSVファイルベース(Googleドライブ同期想定)
@@ -4668,17 +4668,35 @@ def test_mode():
         #   ライン名・型番は自由記述のまま残す — 実施要領 第5章の目的（相場を外した
         #   原因が「商品の特定ミス」か「状態の読み違い」かを採点者が切り分ける）は、
         #   受験者がどこまで特定できたかの粒度差から読み取るため。
+        # v0.16.2: 選択肢を「日本語名 / 英語名」の併記にする。brand_ja のみだと
+        #   "gucci" と打っても当たらず、日本語を読めない受験者が探せない。
         try:
-            _brand_opts = sorted(load_brands()["brand_ja"].dropna().astype(str).unique().tolist())
+            _bdf = load_brands()
+            _bopts, _bmap = [], {}
+            for _ja, _en in zip(
+                _bdf.get("brand_ja", pd.Series(dtype=str)).fillna("").astype(str),
+                _bdf.get("brand_en", pd.Series(dtype=str)).fillna("").astype(str),
+            ):
+                _ja, _en = _ja.strip(), _en.strip()
+                if not (_ja or _en):
+                    continue
+                _lbl = f"{_ja} / {_en}" if (_ja and _en) else (_ja or _en)
+                if _lbl in _bmap:
+                    continue
+                _bmap[_lbl] = _en or _ja  # 保存値は英語名を優先（採点画面の表記に合わせる）
+                _bopts.append(_lbl)
+            _bopts = sorted(_bopts)
         except Exception:
-            _brand_opts = []
-        _brand = st.selectbox(
-            "ブランド / Brand", ["—"] + _brand_opts, key=f"{_fk}_brand")
+            _bopts, _bmap = [], {}
+        _brand_lbl = st.selectbox(
+            "ブランド / Brand", ["—"] + _bopts, key=f"{_fk}_brand",
+            help="日本語・英語どちらでも検索できます / Searchable in Japanese or English")
+        _brand = _bmap.get(_brand_lbl, "") if _brand_lbl != "—" else ""
         _model = st.text_input(
             "ライン名・型番 / Line & model no.", key=f"{_fk}_model",
             placeholder="例: ネヴァーフル MM モノグラム M40156")
         item_name = " ".join(
-            x for x in [(_brand if _brand != "—" else ""), (_model or "").strip()] if x
+            x for x in [_brand, (_model or "").strip()] if x
         ).strip()
         year = st.text_input("年式 / Year", key=f"{_fk}_year")
         rank_options = ["—", "N", "S", "SA", "A", "AB", "B", "BC", "C", "D"]
@@ -5599,7 +5617,7 @@ def main():
             st.rerun()
 
         st.markdown("---")
-        st.markdown("**Chosuke v0.16.1 (cloud)**")
+        st.markdown("**Chosuke v0.16.2 (cloud)**")
         st.caption("Wise eyes never miss a corner.")
 
     # ロール外モードへの直接アクセスを防ぐ(保険)
@@ -5629,7 +5647,7 @@ def main():
 
     st.markdown(f"""
     <div class="chosuke-footer">
-        Chosuke v0.16.1 🦉 · Eco Ring Cambodia AI Appraisal Assistant<br>
+        Chosuke v0.16.2 🦉 · Eco Ring Cambodia AI Appraisal Assistant<br>
         {t("ui.footer.tagline")}
     </div>
     """, unsafe_allow_html=True)
