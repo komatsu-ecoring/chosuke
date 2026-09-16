@@ -1,5 +1,5 @@
 """
-Chosuke v0.16.4 — Eco Ring Cambodia AI Appraisal Assistant
+Chosuke v0.16.5 — Eco Ring Cambodia AI Appraisal Assistant
 ========================================================
 査定モード + 査定レビューモード + ナレッジ管理モード + 設定の4画面構成
 ローカルCSVファイルベース(Googleドライブ同期想定)
@@ -209,6 +209,7 @@ import pandas as pd
 import os
 import re
 import json
+import io
 from datetime import datetime
 from pathlib import Path
 
@@ -4869,9 +4870,21 @@ def _load_shot_images(shot_id: str) -> list[bytes]:
     if not shot_id:
         return []
     try:
-        return be.load_screenshots(shot_id)
+        raw = be.load_screenshots(shot_id)
     except Exception:
         return []
+    # v0.16.5: 途中までしか保存できなかった画像を、ここで落としておく。
+    #   採点画面に渡す前に PIL で開けるかどうかを確かめる。
+    ok = []
+    for b in raw:
+        try:
+            from PIL import Image as _PILImage
+            _im = _PILImage.open(io.BytesIO(b))
+            _im.load()
+            ok.append(b)
+        except Exception:
+            continue
+    return ok
 
 
 def test_grading_mode():
@@ -5042,10 +5055,16 @@ def test_grading_mode():
                     _shot = a.get("shot_id", "")
                     imgs = _load_shot_images(str(_shot)) if _shot else []
                     if imgs:
+                        # v0.16.5: 9/16の障害中に写真のチャンクが途中までしか
+                        #   書き込めなかったものがあり、PILが読めずに採点画面全体が
+                        #   落ちる。1枚の破損で採点を止めないよう個別に握りつぶす。
                         thumb_cols = st.columns(min(len(imgs), 3))
                         for i, img in enumerate(imgs):
                             with thumb_cols[i % len(thumb_cols)]:
-                                st.image(img, width=120)
+                                try:
+                                    st.image(img, width=120)
+                                except Exception:
+                                    st.caption("⚠️ 画像を表示できません（データ破損）")
 
                     # 必須写真の充足
                     p_overall = int(pd.to_numeric(a.get("photo_overall", 0), errors="coerce") or 0)
@@ -5646,7 +5665,7 @@ def main():
             st.rerun()
 
         st.markdown("---")
-        st.markdown("**Chosuke v0.16.4 (cloud)**")
+        st.markdown("**Chosuke v0.16.5 (cloud)**")
         st.caption("Wise eyes never miss a corner.")
 
     # ロール外モードへの直接アクセスを防ぐ(保険)
@@ -5676,7 +5695,7 @@ def main():
 
     st.markdown(f"""
     <div class="chosuke-footer">
-        Chosuke v0.16.4 🦉 · Eco Ring Cambodia AI Appraisal Assistant<br>
+        Chosuke v0.16.5 🦉 · Eco Ring Cambodia AI Appraisal Assistant<br>
         {t("ui.footer.tagline")}
     </div>
     """, unsafe_allow_html=True)
