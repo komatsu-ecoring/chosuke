@@ -1,5 +1,5 @@
 """
-Chosuke v0.16.5 — Eco Ring Cambodia AI Appraisal Assistant
+Chosuke v0.17.0 — Eco Ring Cambodia AI Appraisal Assistant
 ========================================================
 査定モード + 査定レビューモード + ナレッジ管理モード + 設定の4画面構成
 ローカルCSVファイルベース(Googleドライブ同期想定)
@@ -1025,6 +1025,17 @@ def score_range(row: dict) -> dict:
 # ============================================================
 # データ初期化
 # ============================================================
+@st.cache_data(ttl=86400, show_spinner=False)
+def _purge_screenshots_daily():
+    """v0.17.0: 保存期間を過ぎた画像を自動削除する。
+    ttl=86400 のキャッシュで1日1回しか走らないようにしている。
+    失敗しても業務は止めない(次回に回す)。"""
+    try:
+        return be.purge_old_screenshots()
+    except Exception:
+        return {"deleted_rows": 0, "deleted_images": 0, "kept_rows": 0}
+
+
 def init_data():
     """スプレッドシートの各タブを保証し、空なら初期データを投入する(クラウド版)。
     - タブが無ければ chosuke_backend がヘッダ付きで自動生成。
@@ -1032,6 +1043,7 @@ def init_data():
     - appraisal_history の不足列は backend.init_backend() が補う。
     ※移行スクリプトで既にデータが入っていれば、空判定に引っかからず上書きしない。"""
     be.init_backend()
+    _purge_screenshots_daily()
 
     if be.read_sheet("brands").empty:
         be.write_sheet("brands", DEFAULT_BRANDS)
@@ -5377,6 +5389,33 @@ def settings_mode():
     st.markdown(f"**スプレッドシートID**: `{_sid}`")
     st.caption(t("ui.settings.screenshot_caption"))
 
+    # --- v0.17.0: 画像の使用量と保存期間 ---
+    st.markdown("#### 🖼 画像の保存状況 / Screenshot storage")
+    try:
+        _u = be.screenshot_usage()
+        c1, c2, c3 = st.columns(3)
+        c1.metric("画像枚数 / Images", f"{_u['images']:,}")
+        c2.metric("行数 / Rows", f"{_u['rows']:,}")
+        c3.metric("上限に対する使用率", f"{_u['pct']:.2f}%")
+        if _u["pct"] >= 60:
+            st.error("⚠️ 上限に近づいています。保存期間を短くするか、古い画像を削除してください。")
+        elif _u["pct"] >= 30:
+            st.warning("使用率が上がっています。保存期間の見直しを検討してください。")
+        st.caption(
+            f"提出から {be.SCREENSHOT_RETENTION_DAYS} 日を過ぎた画像は、1日1回の自動削除で消えます。"
+            "鑑定士試験の写真は制度の記録として残します。"
+        )
+        if st.button("🧹 いま古い画像を削除する", key="settings_purge_shots"):
+            _r = be.purge_old_screenshots()
+            if _r["deleted_rows"]:
+                st.success(
+                    f"{_r['deleted_images']} 枚（{_r['deleted_rows']} 行）を削除しました。")
+            else:
+                st.info("削除対象はありませんでした。")
+            st.rerun()
+    except Exception as _e:
+        st.caption(f"使用量を取得できませんでした: {_e}")
+
     st.markdown(t("ui.settings.rowcounts"))
     try:
         for _name in ["brands", "checklists", "feedback",
@@ -5665,7 +5704,7 @@ def main():
             st.rerun()
 
         st.markdown("---")
-        st.markdown("**Chosuke v0.16.5 (cloud)**")
+        st.markdown("**Chosuke v0.17.0 (cloud)**")
         st.caption("Wise eyes never miss a corner.")
 
     # ロール外モードへの直接アクセスを防ぐ(保険)
@@ -5695,7 +5734,7 @@ def main():
 
     st.markdown(f"""
     <div class="chosuke-footer">
-        Chosuke v0.16.5 🦉 · Eco Ring Cambodia AI Appraisal Assistant<br>
+        Chosuke v0.17.0 🦉 · Eco Ring Cambodia AI Appraisal Assistant<br>
         {t("ui.footer.tagline")}
     </div>
     """, unsafe_allow_html=True)

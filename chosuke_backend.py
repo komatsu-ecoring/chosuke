@@ -23,7 +23,9 @@ chosuke_backend.py — Chosuke クラウド版ストレージバックエンド
 
 import io
 import json
+import re
 import time
+from datetime import datetime, timedelta
 
 import pandas as pd
 import streamlit as st
@@ -369,3 +371,93 @@ def load_screenshots(shot_id: str) -> list:
         except Exception:
             continue
     return images
+
+
+# ============================================================
+# v0.17.0: screenshots の保存期間管理
+# ------------------------------------------------------------
+# 2026-09-16、旧スプレッドシートが 1000万セルの上限に達して
+# 「永続的な読み取り専用モード」に切り替わり、試験中に書き込みが
+# 一切できなくなった。原因は screenshots タブの無制限な積み上げ。
+# 予兆が何も出なかったため、
+#   (1) 一定期間より古い画像を自動で削除する
+#   (2) 現在の使用量を画面で見えるようにする
+# の2つを入れる。
+# ============================================================
+SCREENSHOT_RETENTION_DAYS = 90      # これより古い画像は自動削除
+SCREENSHOT_KEEP_PREFIXES = ("LV1-", "LV2-", "LV3-")  # 試験の写真は制度の記録なので残す
+
+_SHOT_DATE_RE = re.compile(r"(\d{4}-\d{2}-\d{2})")
+
+
+def _shot_id_date(shot_id: str):
+    """shot_id に埋まっている日付を取り出す。
+    査定・トレーニングは timestamp そのもの、試験は
+    'LV1-0916::Sokry::2026-09-16T02:36:25::q1' の形式。"""
+    m = _SHOT_DATE_RE.search(str(shot_id))
+    if not m:
+        return None
+    try:
+        return datetime.strptime(m.group(1), "%Y-%m-%d")
+    except ValueError:
+        return None
+
+
+def screenshot_usage() -> dict:
+    """screenshots タブの使用量を返す。設定モードの表示用。"""
+    df = read_sheet("screenshots")
+    rows = len(df)
+    cols = len(SHEET_SCHEMAS["screenshots"])
+    images = 0
+    if not df.empty and "shot_id" in df.columns and "idx" in df.columns:
+        images = len(df[["shot_id", "idx"]].astype(str).drop_duplicates())
+    return {
+        "rows": rows,
+        "cells": rows * cols,
+        "images": images,
+        "limit": 10_000_000,
+        "pct": (rows * cols) / 10_000_000 * 100,
+    }
+
+
+def purge_old_screenshots(days: int = None, dry_run: bool = False) -> dict:
+    """保存期間を過ぎた画像を screenshots から削除する。
+
+    - 日付を読み取れない shot_id は安全側に倒して残す
+    - SCREENSHOT_KEEP_PREFIXES で始まる shot_id(試験の写真)は残す
+    - 削除対象が無ければ書き込みを行わない(API節約)
+    """
+    days = SCREENSHOT_RETENTION_DAYS if days is None else days
+    df = read_sheet("screenshots")
+    if df.empty or "shot_id" not in df.columns:
+        return {"deleted_rows": 0, "deleted_images": 0, "kept_rows": 0}
+
+    cutoff = datetime.now() - timedelta(days=days)
+
+    def _keep(sid) -> bool:
+        s = str(sid)
+        if s.startswith(SCREENSHOT_KEEP_PREFIXES):
+            return True
+        d = _shot_id_date(s)
+        if d is None:
+            return True
+        return d >= cutoff
+
+    mask = df["shot_id"].map(_keep)
+    kept = df[mask]
+    dropped = df[~mask]
+    if dropped.empty:
+        return {"deleted_rows": 0, "deleted_images": 0, "kept_rows": len(kept)}
+
+    n_img = 0
+    if "idx" in dropped.columns:
+        n_img = len(dropped[["shot_id", "idx"]].astype(str).drop_duplicates())
+
+    if not dry_run:
+        write_sheet("screenshots", kept.reset_index(drop=True))
+
+    return {
+        "deleted_rows": int(len(dropped)),
+        "deleted_images": int(n_img),
+        "kept_rows": int(len(kept)),
+    }
