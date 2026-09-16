@@ -1,5 +1,5 @@
 """
-Chosuke v0.16.3 — Eco Ring Cambodia AI Appraisal Assistant
+Chosuke v0.16.4 — Eco Ring Cambodia AI Appraisal Assistant
 ========================================================
 査定モード + 査定レビューモード + ナレッジ管理モード + 設定の4画面構成
 ローカルCSVファイルベース(Googleドライブ同期想定)
@@ -4727,7 +4727,8 @@ def test_mode():
             x for x in [_brand, (_model or "").strip()] if x
         ).strip()
         year = st.text_input("年式 / Year", key=f"{_fk}_year")
-        rank_options = ["—", "N", "S", "SA", "A", "AB", "B", "BC", "C", "D"]
+        # v0.16.4: B+ / B- を追加（査定モードの RANK_OPTIONS と揃える）
+        rank_options = ["—", "N", "S", "SA", "A", "AB", "B+", "B", "B-", "BC", "C", "D"]
         rank = st.selectbox("Rank", rank_options, key=f"{_fk}_rank_sel")
         price_usd = st.number_input("相場 (USD) / Market Price", min_value=0, step=1,
                                      key=f"{_fk}_price", format="%d")
@@ -5645,7 +5646,7 @@ def main():
             st.rerun()
 
         st.markdown("---")
-        st.markdown("**Chosuke v0.16.3 (cloud)**")
+        st.markdown("**Chosuke v0.16.4 (cloud)**")
         st.caption("Wise eyes never miss a corner.")
 
     # ロール外モードへの直接アクセスを防ぐ(保険)
@@ -5675,7 +5676,7 @@ def main():
 
     st.markdown(f"""
     <div class="chosuke-footer">
-        Chosuke v0.16.3 🦉 · Eco Ring Cambodia AI Appraisal Assistant<br>
+        Chosuke v0.16.4 🦉 · Eco Ring Cambodia AI Appraisal Assistant<br>
         {t("ui.footer.tagline")}
     </div>
     """, unsafe_allow_html=True)
