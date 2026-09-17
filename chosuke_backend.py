@@ -461,3 +461,336 @@ def purge_old_screenshots(days: int = None, dry_run: bool = False) -> dict:
         "deleted_images": int(n_img),
         "kept_rows": int(len(kept)),
     }
+
+
+# ============================================================
+# v0.17.1: 旧スプレッドシートからの画像復旧
+# ------------------------------------------------------------
+# 2026-09-16 の障害で Chosuke_Data → Chosuke_Data_v2 へ移行した際、
+# screenshots タブの行が新ファイルへ渡りきらなかった。その結果、
+# 移行前(9/15〜9/16午前)のトレーニング提出が、評価画面に
+# 「画像なし」で出る状態になっている。
+#
+# 旧ファイルは読み取り専用だが「読む」ことはできるので、
+# 必要な shot_id の行だけを拾って新ファイルへ戻す。
+#
+# 設計上の注意:
+#   - 旧ファイルは 96MB ある。全部は読まない。
+#   - data 列(1セル45000字)を含む読み取りは、必要な行だけに絞る。
+#   - 索引づくりは A列 → 必要行の A:D、の2段階。ここは軽い。
+#   - 戻すのは「参照されていて、新ファイルに無く、旧ファイルに揃っている」画像だけ。
+# ============================================================
+LEGACY_SPREADSHEET_ID = "18-dDpZefqJG2ynWXO5ZeJx7dcV7B787d1WRa-LUR-7k"
+
+_RESTORE_MAX_CHARS = 2_000_000   # 1回の追記で送る最大文字数(APIペイロード上限の安全側)
+_FETCH_ROWS_PER_RANGE = 40       # data列を含めて一度に取る最大行数
+
+
+@st.cache_resource(show_spinner=False)
+def _get_legacy_spreadsheet() -> gspread.Spreadsheet:
+    """旧スプレッドシートを開く。Secrets に legacy_spreadsheet_id があればそれを使う。"""
+    try:
+        sid = st.secrets.get("legacy_spreadsheet_id", LEGACY_SPREADSHEET_ID)
+    except Exception:
+        sid = LEGACY_SPREADSHEET_ID
+    return _get_gspread_client().open_by_key(sid)
+
+
+def _to_int(v, default: int = -1) -> int:
+    try:
+        return int(str(v).strip())
+    except Exception:
+        return default
+
+
+def _contiguous_ranges(row_nos: list, max_rows: int) -> list:
+    """連続する行番号を (開始, 終了) の範囲にまとめる。max_rows で頭打ちにする。"""
+    out = []
+    if not row_nos:
+        return out
+    start = prev = row_nos[0]
+    for r in row_nos[1:]:
+        if r == prev + 1 and (prev - start + 1) < max_rows:
+            prev = r
+            continue
+        out.append((start, prev))
+        start = prev = r
+    out.append((start, prev))
+    return out
+
+
+def _shot_index_from_ws(ws) -> pd.DataFrame:
+    """screenshots タブの A:D(重い data 列を除く)を読み、行番号付きの索引を返す。
+    列: shot_id / idx / chunk / total_chunks / row_no(1始まり、ヘッダが1行目)"""
+    try:
+        vals = ws.get("A2:D")
+    except Exception:
+        vals = []
+    recs = []
+    for i, row in enumerate(vals or []):
+        if not row or not str(row[0]).strip():
+            continue
+        recs.append({
+            "shot_id": str(row[0]).strip(),
+            "idx": _to_int(row[1]) if len(row) > 1 else -1,
+            "chunk": _to_int(row[2]) if len(row) > 2 else -1,
+            "total_chunks": _to_int(row[3]) if len(row) > 3 else -1,
+            "row_no": i + 2,
+        })
+    return pd.DataFrame(recs, columns=["shot_id", "idx", "chunk", "total_chunks", "row_no"])
+
+
+def _complete_images(idx_df: pd.DataFrame) -> set:
+    """索引から「チャンクが揃っている画像」の (shot_id, idx) 集合を返す。
+    障害中に途中までしか保存されなかった画像を弾くための判定。"""
+    if idx_df is None or idx_df.empty:
+        return set()
+    out = set()
+    for (sid, i), g in idx_df.groupby(["shot_id", "idx"]):
+        total = int(g["total_chunks"].max())
+        if total <= 0:
+            continue
+        chunks = set(int(c) for c in g["chunk"].tolist())
+        if all(c in chunks for c in range(total)):
+            out.add((str(sid), int(i)))
+    return out
+
+
+@st.cache_data(show_spinner=False, ttl=600)
+def _legacy_shot_id_column() -> pd.DataFrame:
+    """旧 screenshots の A列(shot_id)だけを読む。行番号付き。10分キャッシュ。"""
+    ws = _get_legacy_spreadsheet().worksheet("screenshots")
+    col = ws.col_values(1)
+    recs = [{"shot_id": str(v).strip(), "row_no": i + 1}
+            for i, v in enumerate(col) if i >= 1 and str(v).strip()]
+    return pd.DataFrame(recs, columns=["shot_id", "row_no"])
+
+
+def _legacy_index_for(shot_ids) -> pd.DataFrame:
+    """旧ファイルから、指定 shot_id の行だけ A:D を読んで索引にする。"""
+    want = {str(s) for s in shot_ids if str(s).strip()}
+    empty = pd.DataFrame(columns=["shot_id", "idx", "chunk", "total_chunks", "row_no"])
+    if not want:
+        return empty
+    colf = _legacy_shot_id_column()
+    if colf.empty:
+        return empty
+    hit = colf[colf["shot_id"].isin(want)]
+    if hit.empty:
+        return empty
+
+    ws = _get_legacy_spreadsheet().worksheet("screenshots")
+    ranges = _contiguous_ranges(sorted(int(r) for r in hit["row_no"].tolist()), max_rows=2000)
+    recs = []
+    for i in range(0, len(ranges), 20):
+        part = ranges[i:i + 20]
+        got = ws.batch_get([f"A{a}:D{b}" for a, b in part])
+        for (a, _b), block in zip(part, got):
+            for j, row in enumerate(block or []):
+                if not row or not str(row[0]).strip():
+                    continue
+                recs.append({
+                    "shot_id": str(row[0]).strip(),
+                    "idx": _to_int(row[1]) if len(row) > 1 else -1,
+                    "chunk": _to_int(row[2]) if len(row) > 2 else -1,
+                    "total_chunks": _to_int(row[3]) if len(row) > 3 else -1,
+                    "row_no": a + j,
+                })
+    return pd.DataFrame(recs, columns=["shot_id", "idx", "chunk", "total_chunks", "row_no"])
+
+
+def _split_shot_ids(raw) -> list:
+    """screenshot_ids 列("ts::market|ts::item" 形式)を分解する。"""
+    s = str(raw or "").strip()
+    if not s:
+        return []
+    return [p.strip() for p in s.split("|") if p.strip()]
+
+
+def _shot_kind(shot_id: str) -> str:
+    s = str(shot_id)
+    if s.endswith("::market"):
+        return "相場参考"
+    if s.endswith("::item"):
+        return "商品画像"
+    if s.endswith("::expert"):
+        return "相場データ(評価者)"
+    return "画像"
+
+
+def referenced_shot_ids(since: str = "", until: str = "") -> pd.DataFrame:
+    """training_history / appraisal_history が参照している shot_id を一覧にする。
+    since / until は 'YYYY-MM-DD'。timestamp の日付部分で絞る。"""
+    rows = []
+
+    th = read_sheet("training_history")
+    if not th.empty:
+        for _, r in th.iterrows():
+            ts = str(r.get("timestamp", "") or "")
+            d = ts[:10]
+            if since and d < since:
+                continue
+            if until and d > until:
+                continue
+            label = f"{r.get('brand_ja', '')} {r.get('product_name', '')}".strip()
+            for sid in _split_shot_ids(r.get("screenshot_ids", "")):
+                rows.append({"source": "トレーニング", "timestamp": ts,
+                             "staff": str(r.get("staff", "") or ""), "item": label,
+                             "kind": _shot_kind(sid), "shot_id": sid,
+                             "review_status": str(r.get("review_status", "") or "")})
+            exp = str(r.get("expert_screenshot_ids", "") or "").strip()
+            if exp:
+                rows.append({"source": "トレーニング", "timestamp": ts,
+                             "staff": str(r.get("staff", "") or ""), "item": label,
+                             "kind": _shot_kind(exp), "shot_id": exp,
+                             "review_status": str(r.get("review_status", "") or "")})
+
+    ah = read_sheet("appraisal_history")
+    if not ah.empty:
+        for _, r in ah.iterrows():
+            ts = str(r.get("timestamp", "") or "")
+            d = ts[:10]
+            if since and d < since:
+                continue
+            if until and d > until:
+                continue
+            label = f"{r.get('brand_ja', '')} {r.get('product_name', '')}".strip()
+            for sid in _split_shot_ids(r.get("screenshot_ids", "")):
+                rows.append({"source": "査定", "timestamp": ts,
+                             "staff": str(r.get("staff", "") or ""), "item": label,
+                             "kind": _shot_kind(sid), "shot_id": sid,
+                             "review_status": str(r.get("review_status", "") or "")})
+
+    return pd.DataFrame(rows, columns=["source", "timestamp", "staff", "item",
+                                       "kind", "shot_id", "review_status"])
+
+
+def diagnose_screenshots(since: str = "", until: str = "") -> dict:
+    """指定期間の提出について、画像が新ファイルに在るか／旧ファイルから戻せるかを判定する。
+    書き込みは一切しない。"""
+    ref = referenced_shot_ids(since, until)
+    if ref.empty:
+        return {"table": ref, "restorable": [], "counts": {},
+                "note": "この期間に画像を参照している提出がありませんでした。"}
+
+    cur_idx = _shot_index_from_ws(_get_or_create_ws("screenshots"))
+    cur_ok = _complete_images(cur_idx)
+    cur_ok_ids = {sid for sid, _ in cur_ok}
+    cur_any_ids = set(cur_idx["shot_id"].tolist()) if not cur_idx.empty else set()
+
+    wanted = sorted(set(ref["shot_id"].tolist()))
+    legacy_err = ""
+    try:
+        legacy_idx = _legacy_index_for(wanted)
+    except Exception as e:
+        legacy_idx = pd.DataFrame(columns=["shot_id", "idx", "chunk", "total_chunks", "row_no"])
+        legacy_err = str(e)
+    legacy_ok = _complete_images(legacy_idx)
+    legacy_ok_ids = {sid for sid, _ in legacy_ok}
+    legacy_any_ids = set(legacy_idx["shot_id"].tolist()) if not legacy_idx.empty else set()
+
+    def _status(sid: str) -> str:
+        if sid in cur_ok_ids:
+            return "✅ 表示できる"
+        if sid in legacy_ok_ids:
+            return "🟡 旧から戻せる"
+        if sid in legacy_any_ids:
+            return "⚠️ 旧にもチャンク欠け"
+        if sid in cur_any_ids:
+            return "⚠️ 新にチャンク欠け"
+        return "❌ どちらにも無い"
+
+    def _n_images(sid: str) -> int:
+        return len([1 for s, _ in (cur_ok | legacy_ok) if s == sid])
+
+    table = ref.copy()
+    table["状態"] = table["shot_id"].map(_status)
+    table["枚数"] = table["shot_id"].map(_n_images)
+
+    restorable = sorted({sid for sid in wanted
+                         if sid not in cur_ok_ids and sid in legacy_ok_ids})
+    counts = {
+        "参照されている画像群": len(wanted),
+        "表示できる": len([s for s in wanted if s in cur_ok_ids]),
+        "旧から戻せる": len(restorable),
+        "戻せない": len([s for s in wanted
+                       if s not in cur_ok_ids and s not in legacy_ok_ids]),
+        "戻す行数": int(len(legacy_idx[legacy_idx["shot_id"].isin(restorable)]))
+        if not legacy_idx.empty else 0,
+    }
+    return {"table": table, "restorable": restorable, "counts": counts,
+            "note": "", "legacy_error": legacy_err}
+
+
+def restore_screenshots_from_legacy(shot_ids: list, dry_run: bool = False) -> dict:
+    """旧ファイルから指定 shot_id の行を読み、新ファイルの screenshots へ追記する。
+    - 新ファイルに既に揃っている (shot_id, idx) は書かない(二重登録の防止)
+    - 旧ファイル側でチャンクが欠けている画像は書かない
+    """
+    want = {str(s) for s in shot_ids if str(s).strip()}
+    result = {"restored_images": 0, "restored_rows": 0, "skipped_images": 0, "error": ""}
+    if not want:
+        return result
+
+    try:
+        legacy_idx = _legacy_index_for(want)
+    except Exception as e:
+        result["error"] = f"旧ファイルを読めませんでした: {e}"
+        return result
+    if legacy_idx.empty:
+        result["error"] = "旧ファイルに該当する行がありませんでした。"
+        return result
+
+    legacy_ok = _complete_images(legacy_idx)
+    cur_ws = _get_or_create_ws("screenshots")
+    cur_ok = _complete_images(_shot_index_from_ws(cur_ws))
+
+    keep_keys = {k for k in legacy_ok if k not in cur_ok}
+    result["skipped_images"] = len(legacy_ok) - len(keep_keys)
+    if not keep_keys:
+        return result
+
+    mask = legacy_idx.apply(
+        lambda r: (str(r["shot_id"]), int(r["idx"])) in keep_keys, axis=1)
+    target = legacy_idx[mask]
+    if target.empty:
+        return result
+
+    result["restored_images"] = len(keep_keys)
+    if dry_run:
+        result["restored_rows"] = int(len(target))
+        return result
+
+    ws = _get_legacy_spreadsheet().worksheet("screenshots")
+    row_nos = sorted(int(r) for r in target["row_no"].tolist())
+    ranges = _contiguous_ranges(row_nos, max_rows=_FETCH_ROWS_PER_RANGE)
+
+    batch, size, written = [], 0, 0
+    for a, b in ranges:
+        block = ws.batch_get([f"A{a}:E{b}"])
+        rows = block[0] if block else []
+        for row in rows or []:
+            if not row or not str(row[0]).strip():
+                continue
+            key = (str(row[0]).strip(), _to_int(row[1]) if len(row) > 1 else -1)
+            if key not in keep_keys:
+                continue
+            cell = [str(row[0]).strip(),
+                    row[1] if len(row) > 1 else "",
+                    row[2] if len(row) > 2 else "",
+                    row[3] if len(row) > 3 else "",
+                    row[4] if len(row) > 4 else ""]
+            rl = len(str(cell[4]))
+            if batch and size + rl > _RESTORE_MAX_CHARS:
+                cur_ws.append_rows(batch, value_input_option="RAW")
+                written += len(batch)
+                batch, size = [], 0
+            batch.append(cell)
+            size += rl
+    if batch:
+        cur_ws.append_rows(batch, value_input_option="RAW")
+        written += len(batch)
+
+    result["restored_rows"] = written
+    _invalidate("screenshots")
+    return result

@@ -1,5 +1,5 @@
 """
-Chosuke v0.17.0 — Eco Ring Cambodia AI Appraisal Assistant
+Chosuke v0.17.1 — Eco Ring Cambodia AI Appraisal Assistant
 ========================================================
 査定モード + 査定レビューモード + ナレッジ管理モード + 設定の4画面構成
 ローカルCSVファイルベース(Googleドライブ同期想定)
@@ -210,7 +210,7 @@ import os
 import re
 import json
 import io
-from datetime import datetime
+from datetime import datetime, date
 from pathlib import Path
 
 import chosuke_backend as be
@@ -5416,6 +5416,92 @@ def settings_mode():
     except Exception as _e:
         st.caption(f"使用量を取得できませんでした: {_e}")
 
+    # --- v0.17.1: 旧ファイルからの画像復旧 ---
+    st.markdown("---")
+    st.markdown("#### 🛟 旧ファイルからの画像復旧 / Restore images from the old file")
+    st.caption(
+        "2026-09-16 の移行で screenshots タブが新ファイルへ渡りきらず、"
+        "移行前の提出が評価画面に「画像なし」で出ることがあります。"
+        "旧ファイル（読み取り専用）から、必要な画像だけを戻します。"
+        "まず診断してから実行してください。"
+    )
+
+    _rc1, _rc2 = st.columns(2)
+    _r_since = _rc1.date_input("対象期間の開始", value=date(2026, 9, 14),
+                               key="settings_restore_since")
+    _r_until = _rc2.date_input("対象期間の終了", value=date.today(),
+                               key="settings_restore_until")
+
+    if st.button("🔍 診断する（書き込みはしません）", key="settings_restore_diag"):
+        with st.spinner("新ファイルと旧ファイルを突き合わせています..."):
+            try:
+                st.session_state["_restore_diag"] = be.diagnose_screenshots(
+                    str(_r_since), str(_r_until))
+            except Exception as _de:
+                st.session_state["_restore_diag"] = None
+                st.error(f"診断に失敗しました: {_de}")
+
+    _diag = st.session_state.get("_restore_diag")
+    if _diag:
+        if _diag.get("legacy_error"):
+            st.error(
+                "旧ファイルを読めませんでした。サービスアカウント "
+                "`chosuke-app@chosuke.iam.gserviceaccount.com` が旧ファイルに"
+                f"共有されているか確認してください。\n\n詳細: {_diag['legacy_error']}")
+        if _diag.get("note"):
+            st.info(_diag["note"])
+
+        _cnt = _diag.get("counts") or {}
+        if _cnt:
+            _m = st.columns(4)
+            _m[0].metric("参照されている画像群", _cnt.get("参照されている画像群", 0))
+            _m[1].metric("表示できる", _cnt.get("表示できる", 0))
+            _m[2].metric("旧から戻せる", _cnt.get("旧から戻せる", 0))
+            _m[3].metric("戻せない", _cnt.get("戻せない", 0))
+
+        _tbl = _diag.get("table")
+        if _tbl is not None and not _tbl.empty:
+            st.dataframe(
+                _tbl[["timestamp", "staff", "item", "kind", "状態", "枚数", "review_status"]],
+                use_container_width=True, hide_index=True)
+
+        _restorable = _diag.get("restorable") or []
+        if _restorable:
+            _add_rows = int(_cnt.get("戻す行数", 0) or 0)
+            try:
+                _u2 = be.screenshot_usage()
+                _proj = (_u2["rows"] + _add_rows) * 5 / 10_000_000 * 100
+                st.caption(
+                    f"復旧すると約 {_add_rows:,} 行が増え、上限に対する使用率は "
+                    f"{_u2['pct']:.2f}% → 約 {_proj:.2f}% になります。")
+                _too_big = _proj >= 60
+            except Exception:
+                _proj, _too_big = 0.0, False
+            if _too_big:
+                st.error(
+                    "復旧すると使用率が60%を超えます。先に古い画像を削除してから実行してください。")
+            else:
+                _ok = st.checkbox(
+                    f"{len(_restorable)} 群の画像を旧ファイルから戻す（新ファイルに書き込みます）",
+                    key="settings_restore_confirm")
+                if st.button("🛟 復旧を実行する", type="primary",
+                             disabled=not _ok, key="settings_restore_run"):
+                    with st.spinner("旧ファイルから画像を戻しています..."):
+                        _res = be.restore_screenshots_from_legacy(_restorable)
+                    if _res.get("error"):
+                        st.error(_res["error"])
+                    else:
+                        st.success(
+                            f"{_res['restored_images']} 枚（{_res['restored_rows']} 行）を"
+                            "戻しました。評価画面を開き直すと表示されます。")
+                        if _res.get("skipped_images"):
+                            st.caption(
+                                f"（すでに新ファイルにあった {_res['skipped_images']} 枚は"
+                                "書き込んでいません）")
+                        st.session_state["_restore_diag"] = None
+        elif _cnt:
+            st.info("旧ファイルから戻せる画像はありませんでした。")
+
     st.markdown(t("ui.settings.rowcounts"))
     try:
         for _name in ["brands", "checklists", "feedback",
@@ -5704,7 +5790,7 @@ def main():
             st.rerun()
 
         st.markdown("---")
-        st.markdown("**Chosuke v0.17.0 (cloud)**")
+        st.markdown("**Chosuke v0.17.1 (cloud)**")
         st.caption("Wise eyes never miss a corner.")
 
     # ロール外モードへの直接アクセスを防ぐ(保険)
@@ -5734,7 +5820,7 @@ def main():
 
     st.markdown(f"""
     <div class="chosuke-footer">
-        Chosuke v0.17.0 🦉 · Eco Ring Cambodia AI Appraisal Assistant<br>
+        Chosuke v0.17.1 🦉 · Eco Ring Cambodia AI Appraisal Assistant<br>
         {t("ui.footer.tagline")}
     </div>
     """, unsafe_allow_html=True)
