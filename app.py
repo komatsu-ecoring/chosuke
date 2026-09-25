@@ -1,5 +1,5 @@
 """
-Chosuke v0.17.2 — Eco Ring Cambodia AI Appraisal Assistant
+Chosuke v0.17.3 — Eco Ring Cambodia AI Appraisal Assistant
 ========================================================
 査定モード + 査定レビューモード + ナレッジ管理モード + 設定の4画面構成
 ローカルCSVファイルベース(Googleドライブ同期想定)
@@ -2185,36 +2185,20 @@ def appraisal_mode():
         #   マスタの category は1ブランド1値しか持てないため、スカーフ・アクセサリー等を選ぶと
         #   ヴィトン等の主要ブランドが候補から消える取りこぼしが起きていた(査定不能になる)。
         #   → ブランドを消さないことを最優先にし、該当0件なら絞り込みを無効化する。
-        if selected_category != "指定なし":
-            def _matches_category(master_cat: str) -> bool:
-                normalized = BRAND_CATEGORY_NORMALIZE.get(master_cat, master_cat)
-                return normalized == selected_category
-
-            candidate_df = brands_df_sorted[
-                brands_df_sorted["category"].apply(_matches_category)
-            ].reset_index(drop=True)
-
-            if len(candidate_df) > 0:
-                filtered_df = candidate_df
-            else:
-                # 該当ブランドが1件も無い → 絞り込みを諦めて全ブランド表示に戻す
-                filtered_df = brands_df_sorted
-        else:
-            filtered_df = brands_df_sorted
+        # v0.17.3: カテゴリによるブランド絞り込みを廃止。ブランド候補は常に全件を出す。
+        #   理由(現場フィードバック):
+        #   (1) マスタの category は1ブランド1値のため、「靴」を選ぶと靴専業ブランドだけになり
+        #       ヴィトン等の多カテゴリブランドが選べなくなる(v0.10.6のフォールバックは0件時のみ)。
+        #   (2) 候補リストが変わると Streamlit が selectbox の選択値をリセットし、
+        #       選択済みブランドが消える(v0.17.2の「選択中を残す」対策でも防げなかった)。
+        #   ブランド欄は入力検索できるので、絞り込みが無くても探しやすさは落ちない。
+        #   カテゴリは原価率補正・Chosuke応答のためにそのまま使う。
+        filtered_df = brands_df_sorted
 
         brand_labels = [
             f"{row['brand_ja']}  /  {row['brand_en']}"
             for _, row in filtered_df.iterrows()
         ] + ["(その他/未登録)"]
-
-        # v0.17.2: 選択済みブランドがカテゴリ絞り込みで候補から外れると、Streamlit が
-        #   selectbox の値を None にリセットし「カテゴリを選ぶとブランドが消える」現象が起きていた
-        #   (例: ヴィトン(マスタ=バッグ)選択後に「靴」を選ぶ → 靴ブランドだけに絞られヴィトンが消える)。
-        #   v0.10.6 のフォールバックは「該当0件」のときしか効かなかった。
-        #   → 現在選択中のブランドは、絞り込み結果に無くても常に候補の先頭に残す。
-        _cur_brand = st.session_state.get(_k("brand_label"))
-        if _cur_brand and _cur_brand not in brand_labels:
-            brand_labels = [_cur_brand] + brand_labels
 
         # v0.10.7: フォールバック時の案内文は削除(現場フィードバック: 不要・くどい)。
         #   ブランドが消えない挙動(フォールバック)はそのまま維持。
@@ -3114,36 +3098,20 @@ def _training_submit_panel():
         #   マスタの category は1ブランド1値しか持てないため、スカーフ・アクセサリー等を選ぶと
         #   ヴィトン等の主要ブランドが候補から消える取りこぼしが起きていた(査定不能になる)。
         #   → ブランドを消さないことを最優先にし、該当0件なら絞り込みを無効化する。
-        if selected_category != "指定なし":
-            def _matches_category(master_cat: str) -> bool:
-                normalized = BRAND_CATEGORY_NORMALIZE.get(master_cat, master_cat)
-                return normalized == selected_category
-
-            candidate_df = brands_df_sorted[
-                brands_df_sorted["category"].apply(_matches_category)
-            ].reset_index(drop=True)
-
-            if len(candidate_df) > 0:
-                filtered_df = candidate_df
-            else:
-                # 該当ブランドが1件も無い → 絞り込みを諦めて全ブランド表示に戻す
-                filtered_df = brands_df_sorted
-        else:
-            filtered_df = brands_df_sorted
+        # v0.17.3: カテゴリによるブランド絞り込みを廃止。ブランド候補は常に全件を出す。
+        #   理由(現場フィードバック):
+        #   (1) マスタの category は1ブランド1値のため、「靴」を選ぶと靴専業ブランドだけになり
+        #       ヴィトン等の多カテゴリブランドが選べなくなる(v0.10.6のフォールバックは0件時のみ)。
+        #   (2) 候補リストが変わると Streamlit が selectbox の選択値をリセットし、
+        #       選択済みブランドが消える(v0.17.2の「選択中を残す」対策でも防げなかった)。
+        #   ブランド欄は入力検索できるので、絞り込みが無くても探しやすさは落ちない。
+        #   カテゴリは原価率補正・Chosuke応答のためにそのまま使う。
+        filtered_df = brands_df_sorted
 
         brand_labels = [
             f"{row['brand_ja']}  /  {row['brand_en']}"
             for _, row in filtered_df.iterrows()
         ] + ["(その他/未登録)"]
-
-        # v0.17.2: 選択済みブランドがカテゴリ絞り込みで候補から外れると、Streamlit が
-        #   selectbox の値を None にリセットし「カテゴリを選ぶとブランドが消える」現象が起きていた
-        #   (例: ヴィトン(マスタ=バッグ)選択後に「靴」を選ぶ → 靴ブランドだけに絞られヴィトンが消える)。
-        #   v0.10.6 のフォールバックは「該当0件」のときしか効かなかった。
-        #   → 現在選択中のブランドは、絞り込み結果に無くても常に候補の先頭に残す。
-        _cur_brand = st.session_state.get(_tk("brand_label"))
-        if _cur_brand and _cur_brand not in brand_labels:
-            brand_labels = [_cur_brand] + brand_labels
 
         # v0.10.7: フォールバック時の案内文は削除(現場フィードバック: 不要・くどい)。
         #   ブランドが消えない挙動(フォールバック)はそのまま維持。
