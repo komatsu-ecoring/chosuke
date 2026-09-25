@@ -1,5 +1,5 @@
 """
-Chosuke v0.17.1 — Eco Ring Cambodia AI Appraisal Assistant
+Chosuke v0.17.2 — Eco Ring Cambodia AI Appraisal Assistant
 ========================================================
 査定モード + 査定レビューモード + ナレッジ管理モード + 設定の4画面構成
 ローカルCSVファイルベース(Googleドライブ同期想定)
@@ -2207,6 +2207,15 @@ def appraisal_mode():
             for _, row in filtered_df.iterrows()
         ] + ["(その他/未登録)"]
 
+        # v0.17.2: 選択済みブランドがカテゴリ絞り込みで候補から外れると、Streamlit が
+        #   selectbox の値を None にリセットし「カテゴリを選ぶとブランドが消える」現象が起きていた
+        #   (例: ヴィトン(マスタ=バッグ)選択後に「靴」を選ぶ → 靴ブランドだけに絞られヴィトンが消える)。
+        #   v0.10.6 のフォールバックは「該当0件」のときしか効かなかった。
+        #   → 現在選択中のブランドは、絞り込み結果に無くても常に候補の先頭に残す。
+        _cur_brand = st.session_state.get(_k("brand_label"))
+        if _cur_brand and _cur_brand not in brand_labels:
+            brand_labels = [_cur_brand] + brand_labels
+
         # v0.10.7: フォールバック時の案内文は削除(現場フィードバック: 不要・くどい)。
         #   ブランドが消えない挙動(フォールバック)はそのまま維持。
         #   絞り込めない場合は黙って全ブランドを出すのが自然な体験。
@@ -3126,6 +3135,15 @@ def _training_submit_panel():
             f"{row['brand_ja']}  /  {row['brand_en']}"
             for _, row in filtered_df.iterrows()
         ] + ["(その他/未登録)"]
+
+        # v0.17.2: 選択済みブランドがカテゴリ絞り込みで候補から外れると、Streamlit が
+        #   selectbox の値を None にリセットし「カテゴリを選ぶとブランドが消える」現象が起きていた
+        #   (例: ヴィトン(マスタ=バッグ)選択後に「靴」を選ぶ → 靴ブランドだけに絞られヴィトンが消える)。
+        #   v0.10.6 のフォールバックは「該当0件」のときしか効かなかった。
+        #   → 現在選択中のブランドは、絞り込み結果に無くても常に候補の先頭に残す。
+        _cur_brand = st.session_state.get(_tk("brand_label"))
+        if _cur_brand and _cur_brand not in brand_labels:
+            brand_labels = [_cur_brand] + brand_labels
 
         # v0.10.7: フォールバック時の案内文は削除(現場フィードバック: 不要・くどい)。
         #   ブランドが消えない挙動(フォールバック)はそのまま維持。
