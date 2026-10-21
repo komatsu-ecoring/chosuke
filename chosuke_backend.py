@@ -174,9 +174,14 @@ def _get_gspread_client() -> gspread.Client:
 
 
 @st.cache_resource(show_spinner=False)
-def _get_spreadsheet() -> gspread.Spreadsheet:
-    sid = st.secrets["spreadsheet_id"]
+def _open_spreadsheet(sid: str) -> gspread.Spreadsheet:
     return _get_gspread_client().open_by_key(sid)
+
+
+def _get_spreadsheet() -> gspread.Spreadsheet:
+    # v0.18.0: ID ごとにキャッシュする。Secrets の spreadsheet_id を差し替えたとき、
+    #   古いファイルのハンドルを掴み続けないようにするため。
+    return _open_spreadsheet(str(st.secrets["spreadsheet_id"]).strip())
 
 
 # ============================================================
@@ -187,9 +192,12 @@ _WS_CACHE = {}
 def _get_or_create_ws(name: str) -> gspread.Worksheet:
     """名前付きワークシートを返す。無ければスキーマのヘッダ付きで作成する。
     ワークシートのハンドルはプロセス内でキャッシュし、毎回の metadata 取得を避ける。"""
+    ss = _get_spreadsheet()
+    if _WS_CACHE.get("__sid__") != ss.id:
+        _WS_CACHE.clear()
+        _WS_CACHE["__sid__"] = ss.id
     if name in _WS_CACHE:
         return _WS_CACHE[name]
-    ss = _get_spreadsheet()
     try:
         ws = ss.worksheet(name)
     except gspread.WorksheetNotFound:
@@ -335,10 +343,23 @@ def _resize_to_jpeg(file_bytes: bytes) -> bytes:
         return file_bytes
 
 
+def screenshots_enabled() -> bool:
+    """v0.18.0: 画像をスプレッドシートに保存するかどうか。
+    2026-10-21、Chosuke_Data_v2 も画像の積み上げで書き込み不能になったため、
+    既定は「保存しない」。写真の保存先をシートの外へ移す修正が入るまでの一時措置。
+    Secrets に save_screenshots = true を入れると従来どおり保存する。"""
+    try:
+        return bool(st.secrets.get("save_screenshots", False))
+    except Exception:
+        return False
+
+
 def save_screenshot(shot_id: str, idx: int, file_bytes: bytes) -> int:
     """1枚の画像を縮小・Base64化・分割して screenshots タブに保存する。
     返り値はチャンク数。shot_id は査定を一意に識別する文字列(timestamp等)。"""
     import base64
+    if not screenshots_enabled():
+        return 0
     jpeg = _resize_to_jpeg(file_bytes)
     b64 = base64.b64encode(jpeg).decode("ascii")
     chunks = [b64[i:i + _CHUNK] for i in range(0, len(b64), _CHUNK)] or [""]
@@ -351,12 +372,15 @@ def save_screenshot(shot_id: str, idx: int, file_bytes: bytes) -> int:
 
 
 def load_screenshots(shot_id: str) -> list:
-    """指定 shot_id の画像をすべて復元し、JPEGバイトのリストで返す(idx順)。"""
+    """指定 shot_id の画像をすべて復元し、JPEGバイトのリストで返す(idx順)。
+    v0.18.0: 現行ファイルに無ければ、前のファイル(previous_spreadsheet_id)からも探す。"""
     import base64
     df = read_sheet("screenshots")
-    if df.empty or "shot_id" not in df.columns:
-        return []
-    sub = df[df["shot_id"].astype(str) == str(shot_id)]
+    sub = pd.DataFrame()
+    if not df.empty and "shot_id" in df.columns:
+        sub = df[df["shot_id"].astype(str) == str(shot_id)]
+    if sub.empty:
+        sub = _previous_shot_rows(str(shot_id))
     if sub.empty:
         return []
     images = []
@@ -794,3 +818,138 @@ def restore_screenshots_from_legacy(shot_ids: list, dry_run: bool = False) -> di
     result["restored_rows"] = written
     _invalidate("screenshots")
     return result
+
+
+
+# ============================================================
+# v0.18.0: 前のスプレッドシートからの移行
+# ------------------------------------------------------------
+# 2026-10-21、Chosuke_Data_v2 が画像(Base64)の積み上げで書き込み不能になった。
+# 新しい空のスプレッドシートを spreadsheet_id に、旧ファイルを
+# previous_spreadsheet_id に設定すると、起動時に一度だけ
+# screenshots 以外の全タブを旧ファイルから写す。
+#   - 旧ファイルは読み取り専用でも「読む」ことはできる
+#   - 写し終えたら _migration タブに記録し、二度と走らない
+#   - 試験中のセッション(test_sessions / test_answers)もそのまま引き継ぐ
+# 画像は写さない(容量の原因そのもの)。過去の画像は load_screenshots が
+# 旧ファイルを直接読みに行く。
+# ============================================================
+_MIGRATION_TAB = "_migration"
+_MIGRATE_SKIP = {"screenshots", _MIGRATION_TAB}
+_MIGRATE_CHUNK_ROWS = 2000
+
+
+def _previous_spreadsheet_id() -> str:
+    try:
+        return str(st.secrets.get("previous_spreadsheet_id", "") or "").strip()
+    except Exception:
+        return ""
+
+
+@st.cache_resource(show_spinner=False)
+def _get_previous_spreadsheet(sid: str) -> gspread.Spreadsheet:
+    return _get_gspread_client().open_by_key(sid)
+
+
+def _col_letter(n: int) -> str:
+    out = ""
+    while n > 0:
+        n, r = divmod(n - 1, 26)
+        out = chr(65 + r) + out
+    return out
+
+
+def migration_status() -> dict:
+    """現行ファイルの移行記録を返す。記録が無ければ {}。"""
+    try:
+        ss = _get_spreadsheet()
+        ws = ss.worksheet(_MIGRATION_TAB)
+        rows = ws.get_all_values()
+    except Exception:
+        return {}
+    return {r[0]: (r[1] if len(r) > 1 else "") for r in rows if r}
+
+
+@st.cache_resource(show_spinner=False)
+def migrate_from_previous_once(current_sid: str, previous_sid: str) -> dict:
+    """起動時に一度だけ呼ぶ。現行ファイルに移行記録が無ければ、旧ファイルの
+    screenshots 以外の全タブを丸ごと写す。cache_resource でプロセス内1回に限定。"""
+    if not previous_sid or previous_sid == current_sid:
+        return {"status": "skip"}
+    if migration_status().get("migrated_from"):
+        return {"status": "already"}
+
+    old = _get_previous_spreadsheet(previous_sid)
+    new = _get_spreadsheet()
+    existing = {w.title: w for w in new.worksheets()}
+    copied = {}
+    for ws_old in old.worksheets():
+        title = ws_old.title
+        if title in _MIGRATE_SKIP:
+            continue
+        values = ws_old.get_all_values()
+        n_rows = max(len(values), 1)
+        n_cols = max([len(r) for r in values] + [1])
+        values = [r + [""] * (n_cols - len(r)) for r in values]
+        if title in existing:
+            ws_new = existing[title]
+            ws_new.clear()
+            ws_new.resize(rows=n_rows + 100, cols=n_cols)
+        else:
+            ws_new = new.add_worksheet(title=title, rows=n_rows + 100, cols=n_cols)
+        for start in range(0, len(values), _MIGRATE_CHUNK_ROWS):
+            block = values[start:start + _MIGRATE_CHUNK_ROWS]
+            ws_new.update(block, range_name=f"A{start + 1}", value_input_option="RAW")
+            time.sleep(1)  # 書き込み回数の上限に当たらないように
+        copied[title] = len(values)
+        _WS_CACHE.pop(title, None)
+
+    # screenshots はヘッダだけ用意する(画像は写さない)
+    _get_or_create_ws("screenshots")
+
+    log = new.add_worksheet(title=_MIGRATION_TAB, rows=50, cols=2) \
+        if _MIGRATION_TAB not in existing else existing[_MIGRATION_TAB]
+    rows = [["migrated_from", previous_sid],
+            ["migrated_at", datetime.now().isoformat(timespec="seconds")]]
+    rows += [[f"rows:{k}", str(v)] for k, v in copied.items()]
+    log.update(rows, value_input_option="RAW")
+    _invalidate()
+    return {"status": "done", "copied": copied}
+
+
+@st.cache_data(show_spinner=False, ttl=600)
+def _previous_shot_index() -> pd.DataFrame:
+    """旧ファイルの screenshots の索引(A:D)。重い data 列は読まない。"""
+    sid = _previous_spreadsheet_id()
+    if not sid:
+        return pd.DataFrame(columns=["shot_id", "idx", "chunk", "total_chunks", "row_no"])
+    try:
+        ws = _get_previous_spreadsheet(sid).worksheet("screenshots")
+    except Exception:
+        return pd.DataFrame(columns=["shot_id", "idx", "chunk", "total_chunks", "row_no"])
+    return _shot_index_from_ws(ws)
+
+
+def _previous_shot_rows(shot_id: str) -> pd.DataFrame:
+    """旧ファイルから指定 shot_id の画像行(shot_id/idx/chunk/total_chunks/data)を読む。"""
+    cols = ["shot_id", "idx", "chunk", "total_chunks", "data"]
+    sid = _previous_spreadsheet_id()
+    if not sid or not shot_id:
+        return pd.DataFrame(columns=cols)
+    idx = _previous_shot_index()
+    hit = idx[idx["shot_id"] == shot_id] if not idx.empty else idx
+    if hit is None or hit.empty:
+        return pd.DataFrame(columns=cols)
+    try:
+        ws = _get_previous_spreadsheet(sid).worksheet("screenshots")
+        ranges = _contiguous_ranges(sorted(hit["row_no"].astype(int).tolist()),
+                                    _FETCH_ROWS_PER_RANGE)
+        got = ws.batch_get([f"A{a}:E{b}" for a, b in ranges])
+    except Exception:
+        return pd.DataFrame(columns=cols)
+    recs = []
+    for block in got:
+        for r in block:
+            r = list(r) + [""] * (5 - len(r))
+            recs.append(dict(zip(cols, r[:5])))
+    return pd.DataFrame(recs, columns=cols)

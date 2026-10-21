@@ -1,5 +1,5 @@
 """
-Chosuke v0.17.3 — Eco Ring Cambodia AI Appraisal Assistant
+Chosuke v0.18.0 — Eco Ring Cambodia AI Appraisal Assistant
 ========================================================
 査定モード + 査定レビューモード + ナレッジ管理モード + 設定の4画面構成
 ローカルCSVファイルベース(Googleドライブ同期想定)
@@ -1042,6 +1042,12 @@ def init_data():
     - brands / checklists / staff_master が空なら初期値を投入。
     - appraisal_history の不足列は backend.init_backend() が補う。
     ※移行スクリプトで既にデータが入っていれば、空判定に引っかからず上書きしない。"""
+    # v0.18.0: 新しいスプレッドシートに切り替えた直後なら、旧ファイルから全タブを写す。
+    #   初期データ投入(下の空判定)より先に行い、既存データを既定値で上書きしないようにする。
+    _prev_sid = be._previous_spreadsheet_id()
+    if _prev_sid:
+        with st.spinner("前のファイルからデータを移しています... / Migrating data..."):
+            be.migrate_from_previous_once(str(st.secrets["spreadsheet_id"]).strip(), _prev_sid)
     be.init_backend()
     _purge_screenshots_daily()
 
@@ -4674,6 +4680,10 @@ def test_mode():
     st.markdown(f"### 問{sel_q_no}")
     _fk = f"test_q{sel_q_no}"  # form key prefix
 
+    if not be.screenshots_enabled():
+        st.info("📷 写真はアプリに保存されません。アップロードしたうえで、同じ写真を小松さんに直接送ってください。"
+                " / Photos are not saved in the app for now. Upload them here, and also send the same photos directly to Komatsu.")
+
     col1, col2 = st.columns(2)
     with col1:
         overall_file = st.file_uploader(
@@ -5052,6 +5062,8 @@ def test_grading_mode():
                     # 写真サムネイル（キャッシュ経由）
                     _shot = a.get("shot_id", "")
                     imgs = _load_shot_images(str(_shot)) if _shot else []
+                    if not imgs and not be.screenshots_enabled():
+                        st.caption("📷 写真はアプリ外（直接送付）で確認してください")
                     if imgs:
                         # v0.16.5: 9/16の障害中に写真のチャンクが途中までしか
                         #   書き込めなかったものがあり、PILが読めずに採点画面全体が
@@ -5776,7 +5788,7 @@ def main():
             st.rerun()
 
         st.markdown("---")
-        st.markdown("**Chosuke v0.17.1 (cloud)**")
+        st.markdown("**Chosuke v0.18.0 (cloud)**")
         st.caption("Wise eyes never miss a corner.")
 
     # ロール外モードへの直接アクセスを防ぐ(保険)
@@ -5806,7 +5818,7 @@ def main():
 
     st.markdown(f"""
     <div class="chosuke-footer">
-        Chosuke v0.17.1 🦉 · Eco Ring Cambodia AI Appraisal Assistant<br>
+        Chosuke v0.18.0 🦉 · Eco Ring Cambodia AI Appraisal Assistant<br>
         {t("ui.footer.tagline")}
     </div>
     """, unsafe_allow_html=True)
