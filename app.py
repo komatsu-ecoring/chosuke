@@ -1,5 +1,5 @@
 """
-Chosuke v0.18.2 — Eco Ring Cambodia AI Appraisal Assistant
+Chosuke v0.18.3 — Eco Ring Cambodia AI Appraisal Assistant
 ========================================================
 査定モード + 査定レビューモード + ナレッジ管理モード + 設定の4画面構成
 ローカルCSVファイルベース(Googleドライブ同期想定)
@@ -4976,18 +4976,19 @@ def test_grading_mode():
     st.markdown("## ✏️ テスト採点 / Test Grading")
 
     # --- データ読み込み ---
+    # v0.18.3: 読み込みに失敗したときは「0件」として描かない。
+    #   失敗を空データとして扱うと、画面が落ちたり、採点が消えたように見えたりするため。
     try:
         df_sessions = be.read_sheet("test_sessions")
-    except Exception:
-        df_sessions = pd.DataFrame(columns=be.SHEET_SCHEMAS["test_sessions"])
-    try:
         df_answers = be.read_sheet("test_answers")
-    except Exception:
-        df_answers = pd.DataFrame(columns=be.SHEET_SCHEMAS["test_answers"])
-    try:
         df_items = be.read_sheet("test_items")
-    except Exception:
-        df_items = pd.DataFrame(columns=be.SHEET_SCHEMAS["test_items"])
+    except Exception as _le:
+        import traceback as _tb
+        print("[grading] read failed:\n" + _tb.format_exc(), flush=True)
+        st.error("データの読み込みに失敗しました（Googleの一時的な制限の可能性があります）。"
+                 "30秒〜1分ほど待ってから、画面を再読み込みしてください。データは消えていません。"
+                 f"\n\n詳細: {type(_le).__name__}: {_le}")
+        return
 
     # submitted / graded / notified のみ表示（in_progress は非表示）
     gradable = df_sessions[
@@ -5873,7 +5874,7 @@ def main():
             st.rerun()
 
         st.markdown("---")
-        st.markdown("**Chosuke v0.18.2 (cloud)**")
+        st.markdown("**Chosuke v0.18.3 (cloud)**")
         st.caption("Wise eyes never miss a corner.")
 
     # ロール外モードへの直接アクセスを防ぐ(保険)
@@ -5903,7 +5904,7 @@ def main():
 
     st.markdown(f"""
     <div class="chosuke-footer">
-        Chosuke v0.18.2 🦉 · Eco Ring Cambodia AI Appraisal Assistant<br>
+        Chosuke v0.18.3 🦉 · Eco Ring Cambodia AI Appraisal Assistant<br>
         {t("ui.footer.tagline")}
     </div>
     """, unsafe_allow_html=True)
