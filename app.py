@@ -1,5 +1,5 @@
 """
-Chosuke v0.18.0 — Eco Ring Cambodia AI Appraisal Assistant
+Chosuke v0.18.1 — Eco Ring Cambodia AI Appraisal Assistant
 ========================================================
 査定モード + 査定レビューモード + ナレッジ管理モード + 設定の4画面構成
 ローカルCSVファイルベース(Googleドライブ同期想定)
@@ -4680,6 +4680,64 @@ def test_mode():
     st.markdown(f"### 問{sel_q_no}")
     _fk = f"test_q{sel_q_no}"  # form key prefix
 
+    # v0.18.1: 提出済みの問は、前回の解答を画面に出し、入力欄にも入れておく。
+    #   差し戻し(再開)で再提出するとき、受験者が自分の解答を確認できるようにするため。
+    #   写真は再アップロードしなければ前回の提出分をそのまま使う。
+    _prev = existing_ans.iloc[0] if not existing_ans.empty else None
+
+    def _pv(col):
+        if _prev is None:
+            return ""
+        v = _prev.get(col, "")
+        return "" if v is None or (isinstance(v, float) and pd.isna(v)) else str(v).strip()
+
+    def _pi(col):
+        try:
+            return int(float(_pv(col) or 0))
+        except ValueError:
+            return 0
+
+    _prev_flags = {
+        "overall": _pi("photo_overall"), "logo": _pi("photo_logo"),
+        "id": _pi("photo_id"), "rank": _pi("photo_rank_count"),
+    }
+    if _prev is not None:
+        with st.container(border=True):
+            st.markdown("##### 📝 前回の解答 / Your previous answer")
+            st.markdown(
+                f"- 商品名 / Item: **{_pv('item_name') or '—'}**\n"
+                f"- 年式 / Year: **{_pv('year') or '—'}**\n"
+                f"- Rank: **{_pv('rank') or '—'}**\n"
+                f"- 相場 / Market price: **${_pv('price_usd') or '—'}**\n"
+                f"- 写真 / Photos: 全体 {_prev_flags['overall']} / ロゴ {_prev_flags['logo']} / "
+                f"個体特定 {_prev_flags['id']} / Rank {_prev_flags['rank']}枚")
+            try:
+                _prev_imgs = _load_shot_images(str(_pv("shot_id")))
+            except Exception:
+                _prev_imgs = []
+            if _prev_imgs:
+                _pc = st.columns(min(len(_prev_imgs), 6))
+                for _i, _img in enumerate(_prev_imgs):
+                    with _pc[_i % len(_pc)]:
+                        try:
+                            st.image(_img, width=90)
+                        except Exception:
+                            pass
+            st.caption("写真は、新しくアップロードしなければ前回の写真をそのまま使います。"
+                       " / If you don't upload new photos, your previous photos are kept.")
+        # 入力欄に前回の値を入れておく(初回表示時のみ。受験者が書き換えた値は上書きしない)
+        _flag = f"{_fk}_prefilled::{session_id}"
+        if not st.session_state.get(_flag):
+            st.session_state.setdefault(f"{_fk}_year", _pv("year"))
+            _r = _pv("rank")
+            if _r in ("N", "S", "SA", "A", "AB", "B+", "B", "B-", "BC", "C", "D"):
+                st.session_state.setdefault(f"{_fk}_rank_sel", _r)
+            try:
+                st.session_state.setdefault(f"{_fk}_price", int(float(_pv("price_usd") or 0)))
+            except ValueError:
+                pass
+            st.session_state[_flag] = True
+
     if not be.screenshots_enabled():
         st.info("📷 写真はアプリに保存されません。アップロードしたうえで、同じ写真を小松さんに直接送ってください。"
                 " / Photos are not saved in the app for now. Upload them here, and also send the same photos directly to Komatsu.")
@@ -4725,6 +4783,16 @@ def test_mode():
             _bopts = sorted(_bopts)
         except Exception:
             _bopts, _bmap = [], {}
+        # v0.18.1: 前回の商品名から、ブランドとライン名・型番を入力欄に戻す
+        if _prev is not None and f"{_fk}_brand" not in st.session_state \
+                and f"{_fk}_model" not in st.session_state:
+            _iname = _pv("item_name")
+            _hit_lbl, _hit_val = "—", ""
+            for _lbl, _val in _bmap.items():
+                if _val and _iname.upper().startswith(_val.upper()) and len(_val) > len(_hit_val):
+                    _hit_lbl, _hit_val = _lbl, _val
+            st.session_state[f"{_fk}_brand"] = _hit_lbl
+            st.session_state[f"{_fk}_model"] = _iname[len(_hit_val):].strip() if _hit_val else _iname
         _brand_lbl = st.selectbox(
             "ブランド / Brand", ["—"] + _bopts, key=f"{_fk}_brand",
             help="日本語・英語どちらでも検索できます / Searchable in Japanese or English")
@@ -4747,6 +4815,13 @@ def test_mode():
     photo_logo = 1 if logo_file else 0
     photo_id = 1 if id_file else 0
     rank_count = len(rank_files) if rank_files else 0
+    # v0.18.1: 再提出で写真を上げ直さなかった欄は、前回の提出分を引き継ぐ
+    #   (写真の保存キーは session_id + 問番号で固定なので、前回の写真がそのまま表示される)
+    if _prev is not None:
+        photo_overall = photo_overall or _prev_flags["overall"]
+        photo_logo = photo_logo or _prev_flags["logo"]
+        photo_id = photo_id or _prev_flags["id"]
+        rank_count = rank_count or _prev_flags["rank"]
 
     missing = []
     if not photo_overall:
@@ -5788,7 +5863,7 @@ def main():
             st.rerun()
 
         st.markdown("---")
-        st.markdown("**Chosuke v0.18.0 (cloud)**")
+        st.markdown("**Chosuke v0.18.1 (cloud)**")
         st.caption("Wise eyes never miss a corner.")
 
     # ロール外モードへの直接アクセスを防ぐ(保険)
@@ -5818,7 +5893,7 @@ def main():
 
     st.markdown(f"""
     <div class="chosuke-footer">
-        Chosuke v0.18.0 🦉 · Eco Ring Cambodia AI Appraisal Assistant<br>
+        Chosuke v0.18.1 🦉 · Eco Ring Cambodia AI Appraisal Assistant<br>
         {t("ui.footer.tagline")}
     </div>
     """, unsafe_allow_html=True)
