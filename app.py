@@ -1,5 +1,5 @@
 """
-Chosuke v0.18.3 — Eco Ring Cambodia AI Appraisal Assistant
+Chosuke v0.19.0 — Eco Ring Cambodia AI Appraisal Assistant
 ========================================================
 査定モード + 査定レビューモード + ナレッジ管理モード + 設定の4画面構成
 ローカルCSVファイルベース(Googleドライブ同期想定)
@@ -2409,11 +2409,12 @@ def appraisal_mode():
         if uploaded_files:
             screenshots_count = len(uploaded_files)
             # shot_id は査定のtimestampを使う(一意)。各画像を縮小してスプレッドシートに保存。
-            for i, f in enumerate(uploaded_files):
-                try:
-                    be.save_screenshot(_ts_iso, i, f.read())
-                except Exception as e:
-                    st.warning(f"スクショの保存に失敗しました({f.name}): {e}")
+            try:
+                with st.spinner("写真を保存しています... / Saving photos..."):
+                    be.save_screenshots_many(
+                        _ts_iso, [(i, f.getvalue()) for i, f in enumerate(uploaded_files)])
+            except Exception as e:
+                st.error(f"⚠️ スクショの保存に失敗しました。もう一度お試しください。 / Failed to save photos.\n\n{e}")
 
         advice = chosuke_advise(
             brand_ja, brand_en, product_name, year, accessories,
@@ -3549,24 +3550,23 @@ def _training_submit_panel():
                     # 相場参考スクショ(②): shot_id "ts::market"
                     market_shot_id = _ts_iso + "::market"
                     market_count = 0
-                    if uploaded_files:
-                        market_count = len(uploaded_files)
-                        for i, f in enumerate(uploaded_files):
-                            try:
-                                be.save_screenshot(market_shot_id, i, f.read())
-                            except Exception as ex:
-                                st.warning(f"相場スクショ保存に失敗({f.name}): {ex}")
-                    # 商品画像(①③): shot_id "ts::item" idx0=全体, idx1..=ポイント
+                    # v0.19.0: 写真はドライブに保存。失敗したら提出を止めて画面に出す
+                    #   (以前は警告の直後に画面が更新され、失敗に気づけなかった)
                     item_shot_id = _ts_iso + "::item"
-                    item_count = 0
+                    _item_imgs = [(0, overall_file.getvalue())] + [
+                        (j, pf.getvalue()) for j, pf in enumerate(point_files or [], start=1)]
                     try:
-                        be.save_screenshot(item_shot_id, 0, overall_file.read())
-                        item_count += 1
-                        for j, pf in enumerate(point_files or [], start=1):
-                            be.save_screenshot(item_shot_id, j, pf.read())
-                            item_count += 1
+                        with st.spinner("写真を保存しています... / Saving photos..."):
+                            market_count = be.save_screenshots_many(
+                                market_shot_id,
+                                [(i, f.getvalue()) for i, f in enumerate(uploaded_files or [])])
+                            item_count = be.save_screenshots_many(item_shot_id, _item_imgs)
                     except Exception as ex:
-                        st.warning(f"商品画像の保存に失敗: {ex}")
+                        st.error("⚠️ 写真の保存に失敗したため、提出できませんでした。"
+                                 "入力はそのままなので、もう一度「提出」を押してください。"
+                                 " / Photos could not be saved, so nothing was submitted. Please press Submit again."
+                                 f"\n\n{ex}")
+                        st.stop()
 
                     append_training({
                         "timestamp": _ts_iso,
@@ -4196,11 +4196,14 @@ def training_review_mode():
             _expert_shot_id = ""
             if expert_ref_files:
                 _expert_shot_id = _reviewed_iso + "::expert"
-                for _i, _rf in enumerate(expert_ref_files):
-                    try:
-                        be.save_screenshot(_expert_shot_id, _i, _rf.read())
-                    except Exception as _ex:
-                        st.warning(f"相場データ画像の保存に失敗({getattr(_rf, 'name', _i)}): {_ex}")
+                try:
+                    with st.spinner("写真を保存しています..."):
+                        be.save_screenshots_many(
+                            _expert_shot_id,
+                            [(_i, _rf.getvalue()) for _i, _rf in enumerate(expert_ref_files)])
+                except Exception as _ex:
+                    st.error(f"⚠️ 相場データ画像の保存に失敗したため、評価を保存していません。もう一度保存してください。\n\n{_ex}")
+                    st.stop()
             df.at[target_idx, "expert_screenshot_ids"] = _expert_shot_id
             be.write_sheet("training_history", df)
 
@@ -4724,7 +4727,9 @@ def test_mode():
                         except Exception:
                             pass
             st.caption("写真は、新しくアップロードしなければ前回の写真をそのまま使います。"
-                       " / If you don't upload new photos, your previous photos are kept.")
+                       "上げ直す場合は、必要な写真を全部上げ直してください（前回の写真と入れ替わります）。"
+                       " / If you don't upload new photos, your previous photos are kept. "
+                       "If you upload again, upload all required photos (they replace the previous ones).")
         # 入力欄に前回の値を入れておく(初回表示時のみ。受験者が書き換えた値は上書きしない)
         _flag = f"{_fk}_prefilled::{session_id}"
         if not st.session_state.get(_flag):
@@ -4817,7 +4822,9 @@ def test_mode():
     rank_count = len(rank_files) if rank_files else 0
     # v0.18.1: 再提出で写真を上げ直さなかった欄は、前回の提出分を引き継ぐ
     #   (写真の保存キーは session_id + 問番号で固定なので、前回の写真がそのまま表示される)
-    if _prev is not None:
+    # v0.19.0: 1枚でも上げ直した場合は前回分と入れ替わるので、引き継がない
+    _any_new_photo = bool(overall_file or logo_file or id_file or rank_files)
+    if _prev is not None and not _any_new_photo:
         photo_overall = photo_overall or _prev_flags["overall"]
         photo_logo = photo_logo or _prev_flags["logo"]
         photo_id = photo_id or _prev_flags["id"]
@@ -4858,31 +4865,22 @@ def test_mode():
         shot_id = f"{session_id}::q{sel_q_no}"
 
         # 画像保存
-        _img_idx = 0
-        if overall_file:
+        # v0.19.0: 写真はドライブに保存。以前はここで失敗を握りつぶしていたため、
+        #   10/21 に写真が保存されていないことに誰も気づけなかった。
+        #   失敗したら解答も保存せずに止め、受験者にもう一度押してもらう。
+        _new_imgs = [f.getvalue() for f in [overall_file, logo_file, id_file] if f] + \
+            [rf.getvalue() for rf in (rank_files or [])]
+        if _new_imgs:
             try:
-                be.save_screenshot(shot_id, _img_idx, overall_file.read())
-                _img_idx += 1
-            except Exception:
-                pass
-        if logo_file:
-            try:
-                be.save_screenshot(shot_id, _img_idx, logo_file.read())
-                _img_idx += 1
-            except Exception:
-                pass
-        if id_file:
-            try:
-                be.save_screenshot(shot_id, _img_idx, id_file.read())
-                _img_idx += 1
-            except Exception:
-                pass
-        for rf in (rank_files or []):
-            try:
-                be.save_screenshot(shot_id, _img_idx, rf.read())
-                _img_idx += 1
-            except Exception:
-                pass
+                with st.spinner("写真を保存しています... / Saving photos..."):
+                    be.save_screenshots_many(
+                        shot_id, list(enumerate(_new_imgs)), batch=be.new_photo_batch())
+            except Exception as _pe:
+                st.error("⚠️ 写真の保存に失敗したため、この問は提出されていません。"
+                         "入力はそのままなので、もう一度「提出」を押してください。"
+                         " / Photos could not be saved, so this answer was NOT submitted. Please press Submit again."
+                         f"\n\n{_pe}")
+                st.stop()
 
         answer_row = {
             "answer_id": answer_id,
@@ -5473,30 +5471,24 @@ def settings_mode():
     st.markdown(f"**スプレッドシートID**: `{_sid}`")
     st.caption(t("ui.settings.screenshot_caption"))
 
-    # --- v0.17.0: 画像の使用量と保存期間 ---
-    st.markdown("#### 🖼 画像の保存状況 / Screenshot storage")
+    # --- v0.19.0: スプレッドシートの容量と写真の保存先 ---
+    st.markdown("#### 🗄 データの保存状況 / Storage")
+    if be.photos_enabled():
+        st.success("📷 写真はGoogleドライブ（Chosuke_Screenshots）に保存されています。")
+    else:
+        st.error("📷 写真の保存先が設定されていません。Secrets に photo_upload_url / photo_upload_token を入れてください。")
     try:
-        _u = be.screenshot_usage()
+        _h = be.storage_health()
         c1, c2, c3 = st.columns(3)
-        c1.metric("画像枚数 / Images", f"{_u['images']:,}")
-        c2.metric("行数 / Rows", f"{_u['rows']:,}")
-        c3.metric("上限に対する使用率", f"{_u['pct']:.2f}%")
-        if _u["pct"] >= 60:
-            st.error("⚠️ 上限に近づいています。保存期間を短くするか、古い画像を削除してください。")
-        elif _u["pct"] >= 30:
-            st.warning("使用率が上がっています。保存期間の見直しを検討してください。")
-        st.caption(
-            f"提出から {be.SCREENSHOT_RETENTION_DAYS} 日を過ぎた画像は、1日1回の自動削除で消えます。"
-            "鑑定士試験の写真は制度の記録として残します。"
-        )
-        if st.button("🧹 いま古い画像を削除する", key="settings_purge_shots"):
-            _r = be.purge_old_screenshots()
-            if _r["deleted_rows"]:
-                st.success(
-                    f"{_r['deleted_images']} 枚（{_r['deleted_rows']} 行）を削除しました。")
-            else:
-                st.info("削除対象はありませんでした。")
-            st.rerun()
+        c1.metric("ファイルサイズ", f"{(_h['size_bytes'] or 0) / 1024 / 1024:.1f} MB",
+                  help=f"上限の目安 {be.SIZE_LIMIT_BYTES // 1024 // 1024} MB")
+        c2.metric("セル数", f"{_h['cells']:,}", help="上限 10,000,000")
+        c3.metric("上限に対する使用率", f"{_h['pct']:.1f}%")
+        if _h["pct"] >= 70:
+            st.error("⚠️ 上限に近づいています。開発担当に連絡してください。")
+        elif _h["pct"] >= 40:
+            st.warning("使用率が上がっています。原因を確認してください。")
+        st.caption("写真はシートに入らないので、通常はほとんど増えません。10分ごとに更新されます。")
     except Exception as _e:
         st.caption(f"使用量を取得できませんでした: {_e}")
 
@@ -5784,6 +5776,18 @@ def main():
     else:
         mode_keys = ["🔍 査定モード", "🎓 トレーニングモード", "📝 テスト"]
 
+    # v0.19.0: 管理者には、容量や写真の保存先の異常をサイドバーで常に知らせる
+    if is_admin:
+        with st.sidebar:
+            if not be.photos_enabled():
+                st.error("📷 写真の保存先が未設定です（設定モード参照）")
+            try:
+                _hh = be.storage_health()
+                if _hh["pct"] >= 40:
+                    st.warning(f"🗄 データ使用率 {_hh['pct']:.0f}%（設定モードで確認）")
+            except Exception:
+                pass
+
     with st.sidebar:
         st.markdown(t("ui.sidebar.mode_select"))
         _MODE_LABEL = {
@@ -5874,7 +5878,7 @@ def main():
             st.rerun()
 
         st.markdown("---")
-        st.markdown("**Chosuke v0.18.3 (cloud)**")
+        st.markdown("**Chosuke v0.19.0 (cloud)**")
         st.caption("Wise eyes never miss a corner.")
 
     # ロール外モードへの直接アクセスを防ぐ(保険)
@@ -5904,7 +5908,7 @@ def main():
 
     st.markdown(f"""
     <div class="chosuke-footer">
-        Chosuke v0.18.3 🦉 · Eco Ring Cambodia AI Appraisal Assistant<br>
+        Chosuke v0.19.0 🦉 · Eco Ring Cambodia AI Appraisal Assistant<br>
         {t("ui.footer.tagline")}
     </div>
     """, unsafe_allow_html=True)

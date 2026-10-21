@@ -373,38 +373,180 @@ def _resize_to_jpeg(file_bytes: bytes) -> bytes:
         return file_bytes
 
 
-def screenshots_enabled() -> bool:
-    """v0.18.0: 画像をスプレッドシートに保存するかどうか。
-    2026-10-21、Chosuke_Data_v2 も画像の積み上げで書き込み不能になったため、
-    既定は「保存しない」。写真の保存先をシートの外へ移す修正が入るまでの一時措置。
-    Secrets に save_screenshots = true を入れると従来どおり保存する。"""
+# ============================================================
+# v0.19.0: 写真はGoogleドライブに画像ファイルとして保存する
+# ------------------------------------------------------------
+# 2026-09-16 と 2026-10-21 の2回、画像(Base64)をスプレッドシートに積み上げた結果、
+# ファイルが大きくなりすぎて書き込み不能になった。以後、画像はシートに入れない。
+#
+#   保存: 小松さんのアカウントで動く Apps Script(photo_upload_url)に送り、
+#         Chosuke_Screenshots フォルダにJPEGとして作ってもらう
+#         (サービスアカウントは自分のドライブ容量を持たないため、作成だけ代行させる)
+#   記録: photos タブに 1枚=1行(shot_id / idx / file_id / batch / uploaded_at / size_bytes)
+#   読出: サービスアカウントで Drive API から直接読む(フォルダの編集者に入っている)
+#         Drive API は Sheets の「1分あたり読み取り回数」とは別枠
+#   旧データ: photos に無ければ、現行 screenshots タブ → 旧ファイル の順に探す
+# ============================================================
+SHEET_SCHEMAS["photos"] = ["shot_id", "idx", "file_id", "batch", "uploaded_at", "size_bytes"]
+_UPLOAD_WORKERS = 4
+_UPLOAD_TIMEOUT = 60
+
+
+class PhotoSaveError(RuntimeError):
+    """写真の保存に失敗したときに投げる。呼び出し側で必ず画面に出すこと。"""
+
+
+def _secret(key: str, default=""):
     try:
-        return bool(st.secrets.get("save_screenshots", False))
+        return st.secrets.get(key, default)
     except Exception:
-        return False
+        return default
 
 
-def save_screenshot(shot_id: str, idx: int, file_bytes: bytes) -> int:
-    """1枚の画像を縮小・Base64化・分割して screenshots タブに保存する。
-    返り値はチャンク数。shot_id は査定を一意に識別する文字列(timestamp等)。"""
+def photos_enabled() -> bool:
+    """写真のドライブ保存が設定されているか。"""
+    return bool(str(_secret("photo_upload_url", "")).strip()
+                and str(_secret("photo_upload_token", "")).strip())
+
+
+def screenshots_enabled() -> bool:
+    """写真を保存できる状態か(画面の案内表示に使う)。
+    ドライブ保存が設定済みなら True。旧方式(save_screenshots)は互換のため残す。"""
+    return photos_enabled() or bool(_secret("save_screenshots", False))
+
+
+def new_photo_batch() -> str:
+    """1回の提出で上げた写真のまとまりを表すID。再提出で写真を差し替えるときに使う。"""
+    return datetime.now().strftime("%Y%m%dT%H%M%S%f")
+
+
+def _upload_one(jpeg: bytes, name: str) -> str:
     import base64
-    if not screenshots_enabled():
+    import requests
+    url = str(_secret("photo_upload_url", "")).strip()
+    token = str(_secret("photo_upload_token", "")).strip()
+    payload = {"token": token, "name": name, "mime": "image/jpeg",
+               "data": base64.b64encode(jpeg).decode("ascii")}
+    last = None
+    for wait in (0, 2, 5):
+        if wait:
+            time.sleep(wait)
+        try:
+            r = requests.post(url, json=payload, timeout=_UPLOAD_TIMEOUT, allow_redirects=True)
+            j = r.json()
+            if j.get("ok") and j.get("id"):
+                return str(j["id"])
+            last = j.get("error") or f"HTTP {r.status_code}"
+            if last == "unauthorized":
+                break  # 合言葉の違いは再試行しても直らない
+        except Exception as e:  # 通信エラー・JSONでない応答など
+            last = f"{type(e).__name__}: {e}"
+    raise PhotoSaveError(f"写真のアップロードに失敗しました({name}): {last}")
+
+
+def save_screenshots_many(shot_id: str, images: list, batch: str = "") -> int:
+    """複数枚をまとめて保存する。images は (idx, bytes) のリスト。
+    ドライブへのアップロードは並列、photos タブへの記録は1回の書き込みで済ませる。
+    1枚でも失敗したら PhotoSaveError を投げる(成功した分は記録してから投げる)。"""
+    if not images:
         return 0
+    if not photos_enabled():
+        if _secret("save_screenshots", False):
+            return sum(_legacy_save_screenshot(shot_id, i, b) for i, b in images)
+        raise PhotoSaveError("写真の保存先が設定されていません(photo_upload_url)。")
+    from concurrent.futures import ThreadPoolExecutor
+    prepared = [(int(i), _resize_to_jpeg(b)) for i, b in images if b]
+    safe = re.sub(r"[^0-9A-Za-z_.-]+", "_", str(shot_id))[:120]
+
+    def _job(item):
+        i, jpeg = item
+        try:
+            return i, _upload_one(jpeg, f"{safe}__{i}.jpg"), len(jpeg), None
+        except Exception as e:
+            return i, "", len(jpeg), e
+
+    with ThreadPoolExecutor(max_workers=_UPLOAD_WORKERS) as ex:
+        results = list(ex.map(_job, prepared))
+    now = datetime.now().isoformat(timespec="seconds")
+    rows = [[str(shot_id), i, fid, batch, now, size] for i, fid, size, err in results if fid]
+    if rows:
+        ws = _get_or_create_ws("photos")
+        if not _with_retry(ws.row_values, 1):
+            _with_retry(ws.update, [SHEET_SCHEMAS["photos"]], value_input_option="RAW")
+        _with_retry(ws.append_rows, rows, value_input_option="RAW")
+        _invalidate("photos")
+    errors = [err for _, _, _, err in results if err]
+    if errors:
+        raise PhotoSaveError(f"{len(errors)}枚の保存に失敗しました: {errors[0]}")
+    return len(rows)
+
+
+def save_screenshot(shot_id: str, idx: int, file_bytes: bytes, batch: str = "") -> int:
+    """1枚保存する(互換用)。失敗時は PhotoSaveError。"""
+    return save_screenshots_many(shot_id, [(idx, file_bytes)], batch=batch)
+
+
+def _legacy_save_screenshot(shot_id: str, idx: int, file_bytes: bytes) -> int:
+    """旧方式: Base64をスプレッドシートに保存する。容量障害の原因なので通常は使わない。"""
+    import base64
     jpeg = _resize_to_jpeg(file_bytes)
     b64 = base64.b64encode(jpeg).decode("ascii")
     chunks = [b64[i:i + _CHUNK] for i in range(0, len(b64), _CHUNK)] or [""]
     total = len(chunks)
     ws = _get_or_create_ws("screenshots")
     rows = [[shot_id, idx, c_i, total, chunk] for c_i, chunk in enumerate(chunks)]
-    ws.append_rows(rows, value_input_option="RAW")
+    _with_retry(ws.append_rows, rows, value_input_option="RAW")
     _invalidate("screenshots")
     return total
+
+
+@st.cache_resource(show_spinner=False)
+def _drive_session():
+    from google.auth.transport.requests import AuthorizedSession
+    return AuthorizedSession(_get_credentials())
+
+
+@st.cache_data(show_spinner=False, ttl=6 * 3600, max_entries=3000)
+def _download_drive_file(file_id: str) -> bytes:
+    r = _drive_session().get(
+        f"https://www.googleapis.com/drive/v3/files/{file_id}",
+        params={"alt": "media", "supportsAllDrives": "true"}, timeout=60)
+    r.raise_for_status()
+    return r.content
+
+
+def _drive_photos(shot_id: str) -> list:
+    """photos タブから shot_id の写真を読み、idx順のバイト列リストを返す。
+    batch が付いている行があれば、最新の batch だけを使う(再提出で差し替えた場合)。"""
+    df = read_sheet("photos")
+    if df.empty or "shot_id" not in df.columns:
+        return []
+    sub = df[df["shot_id"].astype(str) == str(shot_id)].copy()
+    if sub.empty:
+        return []
+    sub["batch"] = sub.get("batch", "").astype(str).fillna("")
+    batched = sub[sub["batch"].str.strip() != ""]
+    if not batched.empty:
+        sub = batched[batched["batch"] == batched["batch"].max()]
+    sub["idx"] = pd.to_numeric(sub["idx"], errors="coerce").fillna(0).astype(int)
+    out = []
+    for fid in sub.sort_values("idx")["file_id"].astype(str):
+        if not fid.strip():
+            continue
+        try:
+            out.append(_download_drive_file(fid.strip()))
+        except Exception:
+            continue
+    return out
 
 
 def load_screenshots(shot_id: str) -> list:
     """指定 shot_id の画像をすべて復元し、JPEGバイトのリストで返す(idx順)。
     v0.18.0: 現行ファイルに無ければ、前のファイル(previous_spreadsheet_id)からも探す。"""
     import base64
+    drive = _drive_photos(str(shot_id))
+    if drive:
+        return drive
     df = read_sheet("screenshots")
     sub = pd.DataFrame()
     if not df.empty and "shot_id" in df.columns:
@@ -1024,3 +1166,45 @@ def _previous_shot_rows(shot_id: str) -> pd.DataFrame:
         except Exception:
             return pd.DataFrame(columns=_PREV_COLS)
     return pd.DataFrame(_PREV_SHOT_ROWS.get(shot_id, []), columns=_PREV_COLS)
+
+
+# ============================================================
+# v0.19.0: スプレッドシートの容量監視
+# ------------------------------------------------------------
+# v0.17.0 の監視は screenshots タブの「行数×列数」しか見ておらず、
+# 実際に効いていた「ファイルのデータ量」を測れていなかった(10/21の障害で判明)。
+# ここでは、ファイル全体のデータ量と、全タブの合計セル数の両方を測る。
+# どちらか高いほうを使用率として出す。
+# ============================================================
+SIZE_LIMIT_BYTES = 80 * 1024 * 1024     # 10/21 に約89MBで書き込み不能になった。安全側に80MBを上限とみなす
+CELL_LIMIT = 10_000_000                  # Google スプレッドシートのセル数上限
+
+
+@st.cache_data(show_spinner=False, ttl=600)
+def storage_health() -> dict:
+    """現行スプレッドシートの使用状況。10分キャッシュ。"""
+    ss = _get_spreadsheet()
+    size = None
+    try:
+        r = _drive_session().get(
+            f"https://www.googleapis.com/drive/v3/files/{ss.id}",
+            params={"fields": "size", "supportsAllDrives": "true"}, timeout=30)
+        r.raise_for_status()
+        size = int(r.json().get("size") or 0) or None
+    except Exception:
+        size = None
+    cells = 0
+    try:
+        meta = _with_retry(ss.fetch_sheet_metadata)
+        for sh in meta.get("sheets", []):
+            gp = sh.get("properties", {}).get("gridProperties", {})
+            cells += int(gp.get("rowCount", 0)) * int(gp.get("columnCount", 0))
+    except Exception:
+        cells = 0
+    pct_size = (size / SIZE_LIMIT_BYTES * 100) if size else 0.0
+    pct_cells = cells / CELL_LIMIT * 100
+    return {
+        "size_bytes": size, "cells": cells,
+        "pct_size": pct_size, "pct_cells": pct_cells,
+        "pct": max(pct_size, pct_cells),
+    }
