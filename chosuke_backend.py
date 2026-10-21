@@ -32,6 +32,36 @@ import streamlit as st
 import gspread
 from google.oauth2.service_account import Credentials
 
+
+# ------------------------------------------------------------
+# v0.18.2: 一時的なエラー(回数上限 429 / サーバ側 5xx)は待って再試行する。
+# 2026-10-21、過去写真の読み込みが集中して読み取り回数の上限に当たり、
+# 画面全体が APIError で止まった。上限は1分単位なので、最大およそ1分待つ。
+# ------------------------------------------------------------
+_RETRY_STATUS = {429, 500, 502, 503}
+_RETRY_WAITS = (2, 5, 10, 20, 30)
+
+
+def _api_status(e) -> int:
+    try:
+        return int(getattr(e, "response", None).status_code)
+    except Exception:
+        try:
+            return int(e.args[0].get("code"))
+        except Exception:
+            return 0
+
+
+def _with_retry(fn, *args, **kwargs):
+    for wait in _RETRY_WAITS:
+        try:
+            return fn(*args, **kwargs)
+        except gspread.exceptions.APIError as e:
+            if _api_status(e) not in _RETRY_STATUS:
+                raise
+            time.sleep(wait)
+    return fn(*args, **kwargs)
+
 # ------------------------------------------------------------
 # スコープ: Sheets と Drive の読み書き
 # (Drive スコープは将来用に残すが、画像はスプレッドシートに保存する)
@@ -246,7 +276,7 @@ def _ensure_columns(ws: gspread.Worksheet, expected_cols: list):
 def _read_sheet_cached(name: str) -> pd.DataFrame:
     """実際にスプレッドシートを読む処理(キャッシュ対象)。30秒キャッシュ。"""
     ws = _get_or_create_ws(name)
-    records = ws.get_all_records()  # 1行目をヘッダとして dict のリスト
+    records = _with_retry(ws.get_all_records)  # 1行目をヘッダとして dict のリスト
     if records:
         df = pd.DataFrame(records)
         for col in SHEET_SCHEMAS.get(name, []):
@@ -285,20 +315,20 @@ def write_sheet(name: str, df: pd.DataFrame):
     # NaN を空文字に。全セルを文字列化(gspread はネイティブ型も可だが安全側)
     safe = df.fillna("").astype(object)
     values = [cols] + safe.values.tolist()
-    ws.clear()
-    ws.update(values, value_input_option="RAW")
+    _with_retry(ws.clear)
+    _with_retry(ws.update, values, value_input_option="RAW")
     _invalidate(name)
 
 
 def append_row(name: str, row: dict):
     """1行を末尾に追記する。ヘッダの列順に並べ替えて入れる。書き込み後キャッシュ破棄。"""
     ws = _get_or_create_ws(name)
-    header = ws.row_values(1)
+    header = _with_retry(ws.row_values, 1)
     if not header:
         header = SHEET_SCHEMAS.get(name, list(row.keys()))
-        ws.update([header], value_input_option="RAW")
+        _with_retry(ws.update, [header], value_input_option="RAW")
     ordered = [_to_cell(row.get(col, "")) for col in header]
-    ws.append_row(ordered, value_input_option="RAW")
+    _with_retry(ws.append_row, ordered, value_input_option="RAW")
     _invalidate(name)
 
 
@@ -917,39 +947,80 @@ def migrate_from_previous_once(current_sid: str, previous_sid: str) -> dict:
     return {"status": "done", "copied": copied}
 
 
-@st.cache_data(show_spinner=False, ttl=600)
+@st.cache_data(show_spinner=False, ttl=3600)
 def _previous_shot_index() -> pd.DataFrame:
-    """旧ファイルの screenshots の索引(A:D)。重い data 列は読まない。"""
+    """旧ファイルの screenshots の索引(A:D)。重い data 列は読まない。1時間キャッシュ。"""
     sid = _previous_spreadsheet_id()
     if not sid:
         return pd.DataFrame(columns=["shot_id", "idx", "chunk", "total_chunks", "row_no"])
     try:
         ws = _get_previous_spreadsheet(sid).worksheet("screenshots")
+        vals = _with_retry(ws.get, "A2:D")
     except Exception:
         return pd.DataFrame(columns=["shot_id", "idx", "chunk", "total_chunks", "row_no"])
-    return _shot_index_from_ws(ws)
+    recs = []
+    for i, row in enumerate(vals or []):
+        if not row or not str(row[0]).strip():
+            continue
+        recs.append({
+            "shot_id": str(row[0]).strip(),
+            "idx": _to_int(row[1]) if len(row) > 1 else -1,
+            "chunk": _to_int(row[2]) if len(row) > 2 else -1,
+            "total_chunks": _to_int(row[3]) if len(row) > 3 else -1,
+            "row_no": i + 2,
+        })
+    return pd.DataFrame(recs, columns=["shot_id", "idx", "chunk", "total_chunks", "row_no"])
+
+
+# v0.18.2: 旧ファイルの画像行はプロセス内で使い回す(古い画像は変わらないので期限なし)。
+#   1問ずつ API を呼ぶと採点画面で数十回の読み取りが集中し、回数上限に当たったため、
+#   prefetch_previous_shots() で画面に出る分をまとめて取ってから表示する。
+_PREV_SHOT_ROWS = {}
+_PREV_COLS = ["shot_id", "idx", "chunk", "total_chunks", "data"]
+_PREV_RANGES_PER_CALL = 15
+
+
+def prefetch_previous_shots(shot_ids) -> None:
+    """旧ファイルから、まだ取っていない shot_id の画像行をまとめて読む。"""
+    sid = _previous_spreadsheet_id()
+    if not sid:
+        return
+    want = {str(x).strip() for x in shot_ids if str(x or "").strip()}
+    want -= set(_PREV_SHOT_ROWS.keys())
+    if not want:
+        return
+    idx = _previous_shot_index()
+    if idx.empty:
+        for w in want:
+            _PREV_SHOT_ROWS[w] = []
+        return
+    hit = idx[idx["shot_id"].isin(want)]
+    for w in want - set(hit["shot_id"].tolist()):
+        _PREV_SHOT_ROWS[w] = []          # 旧ファイルにも無い
+    if hit.empty:
+        return
+    ranges = _contiguous_ranges(sorted(hit["row_no"].astype(int).tolist()),
+                                _FETCH_ROWS_PER_RANGE)
+    ws = _get_previous_spreadsheet(sid).worksheet("screenshots")
+    got_rows = {}
+    for i in range(0, len(ranges), _PREV_RANGES_PER_CALL):
+        part = ranges[i:i + _PREV_RANGES_PER_CALL]
+        blocks = _with_retry(ws.batch_get, [f"A{a}:E{b}" for a, b in part])
+        for block in blocks:
+            for r in block:
+                r = list(r) + [""] * (5 - len(r))
+                got_rows.setdefault(str(r[0]).strip(), []).append(dict(zip(_PREV_COLS, r[:5])))
+    for w in set(hit["shot_id"].tolist()):
+        _PREV_SHOT_ROWS[w] = got_rows.get(w, [])
 
 
 def _previous_shot_rows(shot_id: str) -> pd.DataFrame:
-    """旧ファイルから指定 shot_id の画像行(shot_id/idx/chunk/total_chunks/data)を読む。"""
-    cols = ["shot_id", "idx", "chunk", "total_chunks", "data"]
-    sid = _previous_spreadsheet_id()
-    if not sid or not shot_id:
-        return pd.DataFrame(columns=cols)
-    idx = _previous_shot_index()
-    hit = idx[idx["shot_id"] == shot_id] if not idx.empty else idx
-    if hit is None or hit.empty:
-        return pd.DataFrame(columns=cols)
-    try:
-        ws = _get_previous_spreadsheet(sid).worksheet("screenshots")
-        ranges = _contiguous_ranges(sorted(hit["row_no"].astype(int).tolist()),
-                                    _FETCH_ROWS_PER_RANGE)
-        got = ws.batch_get([f"A{a}:E{b}" for a, b in ranges])
-    except Exception:
-        return pd.DataFrame(columns=cols)
-    recs = []
-    for block in got:
-        for r in block:
-            r = list(r) + [""] * (5 - len(r))
-            recs.append(dict(zip(cols, r[:5])))
-    return pd.DataFrame(recs, columns=cols)
+    """旧ファイルから指定 shot_id の画像行(shot_id/idx/chunk/total_chunks/data)を返す。"""
+    if not _previous_spreadsheet_id() or not shot_id:
+        return pd.DataFrame(columns=_PREV_COLS)
+    if shot_id not in _PREV_SHOT_ROWS:
+        try:
+            prefetch_previous_shots([shot_id])
+        except Exception:
+            return pd.DataFrame(columns=_PREV_COLS)
+    return pd.DataFrame(_PREV_SHOT_ROWS.get(shot_id, []), columns=_PREV_COLS)

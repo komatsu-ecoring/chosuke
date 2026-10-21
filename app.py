@@ -1,5 +1,5 @@
 """
-Chosuke v0.18.1 — Eco Ring Cambodia AI Appraisal Assistant
+Chosuke v0.18.2 — Eco Ring Cambodia AI Appraisal Assistant
 ========================================================
 査定モード + 査定レビューモード + ナレッジ管理モード + 設定の4画面構成
 ローカルCSVファイルベース(Googleドライブ同期想定)
@@ -5010,6 +5010,16 @@ def test_grading_mode():
     for _, row in sessions_in_set.iterrows():
         session_map[row["staff"]] = row["session_id"]
 
+    # v0.18.2: この画面に出る写真(旧ファイル分)を、先にまとめて読んでおく
+    try:
+        _sids = set(session_map.values())
+        _shots = df_answers[df_answers["session_id"].isin(_sids)]["shot_id"].tolist() \
+            if not df_answers.empty and "shot_id" in df_answers.columns else []
+        with st.spinner("写真を読み込んでいます... / Loading photos..."):
+            be.prefetch_previous_shots(_shots)
+    except Exception as _pe:
+        st.caption(f"⚠️ 過去の写真の一部を読み込めませんでした: {_pe}")
+
     # 問題定義
     items = df_items[df_items["test_set_id"] == sel_set].copy()
     items["q_no"] = pd.to_numeric(items["q_no"], errors="coerce").fillna(0).astype(int)
@@ -5863,7 +5873,7 @@ def main():
             st.rerun()
 
         st.markdown("---")
-        st.markdown("**Chosuke v0.18.1 (cloud)**")
+        st.markdown("**Chosuke v0.18.2 (cloud)**")
         st.caption("Wise eyes never miss a corner.")
 
     # ロール外モードへの直接アクセスを防ぐ(保険)
@@ -5893,7 +5903,7 @@ def main():
 
     st.markdown(f"""
     <div class="chosuke-footer">
-        Chosuke v0.18.1 🦉 · Eco Ring Cambodia AI Appraisal Assistant<br>
+        Chosuke v0.18.2 🦉 · Eco Ring Cambodia AI Appraisal Assistant<br>
         {t("ui.footer.tagline")}
     </div>
     """, unsafe_allow_html=True)
