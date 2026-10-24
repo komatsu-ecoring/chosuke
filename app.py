@@ -1,5 +1,5 @@
 """
-Chosuke v0.19.0 — Eco Ring Cambodia AI Appraisal Assistant
+Chosuke v0.19.1 — Eco Ring Cambodia AI Appraisal Assistant
 ========================================================
 査定モード + 査定レビューモード + ナレッジ管理モード + 設定の4画面構成
 ローカルCSVファイルベース(Googleドライブ同期想定)
@@ -1001,25 +1001,82 @@ def _keyword_evidence(kw_text: str, row: dict) -> bool:
     return False
 
 
-def score_range(row: dict) -> dict:
-    """金額の幅の絞り込み。相場メモの上限÷下限の倍率で評価(既存ロジック流用)。"""
+# v0.19.1: 相場メモの「許容できる幅」を価格帯ごとに決める。
+#   狭いほど良い。下限の金額で許容幅(USD)が決まり、その半分以内なら「理想」。
+#   例) 15〜20 / 20〜30 / 40〜50 / 70〜90 / 100〜130 / 700〜800 / 2000〜2200 / 3000〜3300 は許容内
+#       50〜150 / 700〜950 は広すぎ
+#   基準を変えるときはこの表だけ直せばよい。(下限がこの金額未満, 許容幅USD)
+RANGE_WIDTH_BANDS = [
+    (30, 10),     # $30未満: 幅$10まで(5ドル刻みが目安)
+    (100, 20),    # $30〜$99: 幅$20まで
+    (300, 30),    # $100〜$299: 幅$30まで
+    (500, 50),    # $300〜$499: 幅$50まで
+    (1000, 100),  # $500〜$999: 幅$100まで
+]
+RANGE_WIDTH_PCT_ABOVE = 0.10  # $1,000以上: 下限の10%まで
+
+
+def allowed_range_width(pmin: float) -> float:
+    """下限金額から、許容できる相場メモの幅(USD)を返す。"""
+    for limit, width in RANGE_WIDTH_BANDS:
+        if pmin < limit:
+            return float(width)
+    return max(float(RANGE_WIDTH_BANDS[-1][1]), pmin * RANGE_WIDTH_PCT_ABOVE)
+
+
+def evaluate_range(pmin, pmax) -> dict:
+    """相場メモの幅を評価する。
+    level: none(未入力) / reversed(上下逆) / ideal / ok / wide / too_wide"""
     try:
-        pmin = float(_cell_str(row.get("price_min_usd")) or 0)
-        pmax = float(_cell_str(row.get("price_max_usd")) or 0)
+        pmin = float(pmin or 0)
+        pmax = float(pmax or 0)
     except (ValueError, TypeError):
         pmin = pmax = 0
     if pmin <= 0 or pmax <= 0:
-        return {"label": "相場メモなし", "ratio": None}
-    ratio = pmax / pmin
-    if ratio <= 1.15:
-        label = "よく絞れている"
-    elif ratio <= 1.4:
-        label = "許容範囲"
-    elif ratio <= 2.0:
-        label = "やや広い"
+        return {"level": "none"}
+    if pmax < pmin:
+        return {"level": "reversed", "pmin": pmin, "pmax": pmax}
+    width = pmax - pmin
+    allowed = allowed_range_width(pmin)
+    if width <= allowed / 2:
+        level = "ideal"
+    elif width <= allowed:
+        level = "ok"
+    elif width <= allowed * 2:
+        level = "wide"
     else:
-        label = "広すぎ(要確認)"
-    return {"label": label, "ratio": round(ratio, 2)}
+        level = "too_wide"
+    return {"level": level, "pmin": pmin, "pmax": pmax, "width": width,
+            "allowed": allowed, "ratio": round(pmax / pmin, 2)}
+
+
+def score_range(row: dict) -> dict:
+    """金額の幅の絞り込み(評価画面用)。v0.19.1: 価格帯ごとの許容幅で評価。"""
+    ev = evaluate_range(_cell_str(row.get("price_min_usd")), _cell_str(row.get("price_max_usd")))
+    labels = {"ideal": "よく絞れている", "ok": "許容範囲", "wide": "やや広い",
+              "too_wide": "広すぎ(要確認)", "reversed": "広すぎ(要確認)"}
+    if ev["level"] == "none":
+        return {"label": "相場メモなし", "ratio": None}
+    return {"label": labels[ev["level"]], "ratio": ev.get("ratio")}
+
+
+def render_range_width_warning(pmin, pmax) -> None:
+    """トレーニングで相場メモの幅をチェックして表示する。提出は止めない(注意のみ)。"""
+    ev = evaluate_range(pmin, pmax)
+    lv = ev["level"]
+    if lv == "none":
+        return
+    fmt = lambda v: f"{v:,.0f}"
+    if lv == "reversed":
+        st.error(t("dyn.market.reversed", pmin=fmt(ev["pmin"]), pmax=fmt(ev["pmax"])))
+    elif lv == "ideal":
+        st.success(t("dyn.market.ideal", width=fmt(ev["width"])))
+    elif lv in ("wide", "too_wide"):
+        st.warning(t(
+            "dyn.market.too_wide",
+            pmin=fmt(ev["pmin"]), pmax=fmt(ev["pmax"]), width=fmt(ev["width"]),
+            allowed=fmt(ev["allowed"]), ok_max=fmt(ev["pmin"] + ev["allowed"]),
+        ))
 
 
 # ============================================================
@@ -3310,6 +3367,7 @@ def _training_submit_panel():
             price_min = st.number_input(t("ui.market.min"), min_value=0, step=1, format="%d", key=_tk("pmin"))
         with col_pmax:
             price_max = st.number_input(t("ui.market.max"), min_value=0, step=1, format="%d", key=_tk("pmax"))
+        render_range_width_warning(price_min, price_max)
 
         st.markdown("### " + t("ui.screenshot.header"))
         st.info("💻 **相場を調べた“画面”のスクショ** をここに入れてください(ネット・他店の売値など)。"
@@ -3538,6 +3596,9 @@ def _training_submit_panel():
                 sub_help = None
 
             already = st.session_state.get("t_submitted_done")
+            if not already:
+                _snap_r = st.session_state.get("t_pending", {})
+                render_range_width_warning(_snap_r.get("price_min"), _snap_r.get("price_max"))
             if already:
                 st.success("🦉 " + t("ui.training.submitted"))
             else:
@@ -5878,7 +5939,7 @@ def main():
             st.rerun()
 
         st.markdown("---")
-        st.markdown("**Chosuke v0.19.0 (cloud)**")
+        st.markdown("**Chosuke v0.19.1 (cloud)**")
         st.caption("Wise eyes never miss a corner.")
 
     # ロール外モードへの直接アクセスを防ぐ(保険)
@@ -5908,7 +5969,7 @@ def main():
 
     st.markdown(f"""
     <div class="chosuke-footer">
-        Chosuke v0.19.0 🦉 · Eco Ring Cambodia AI Appraisal Assistant<br>
+        Chosuke v0.19.1 🦉 · Eco Ring Cambodia AI Appraisal Assistant<br>
         {t("ui.footer.tagline")}
     </div>
     """, unsafe_allow_html=True)
